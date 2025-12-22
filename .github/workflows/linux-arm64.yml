@@ -80,7 +80,7 @@ jobs:
 
       - name: Display Conan profile
         run: |
-          conan profile show default
+          conan profile show --profile:host default
           conan remote list
 
       - name: Install Cura dependencies
