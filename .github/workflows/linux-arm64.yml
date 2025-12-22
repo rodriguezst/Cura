@@ -3,6 +3,9 @@ run-name: ${{ inputs.cura_conan_version }} ARM64 by @${{ github.actor }}
 
 on:
   push:
+    branches:
+      - main
+      - 'CURA-*'
   pull_request:
     branches:
       - main
@@ -83,7 +86,7 @@ jobs:
 
       - name: Display Conan profile
         run: |
-          conan profile show default
+          conan profile show
           conan remote list
 
       - name: Install Cura dependencies
@@ -102,6 +105,8 @@ jobs:
         run: |
           conan create . ${{ inputs.cura_conan_version && format('--version={0}', inputs.cura_conan_version) || '' }} \
             --build=missing \
+            -c tools.system.package_manager:mode=install \
+            -c tools.system.package_manager:sudo=True \
             -o cura:enterprise=${{ inputs.enterprise }} \
             -o cura:staging=${{ inputs.staging }} \
             ${{ inputs.conan_args }}
