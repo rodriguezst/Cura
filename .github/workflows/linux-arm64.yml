@@ -88,6 +88,7 @@ jobs:
           conan install . --build=missing \
             -c tools.system.package_manager:mode=install \
             -c tools.system.package_manager:sudo=True \
+            --require-overrides=boost/1.86.0 \
             ${{ inputs.conan_args }}
         timeout-minutes: 120  # ARM builds take longer
 
