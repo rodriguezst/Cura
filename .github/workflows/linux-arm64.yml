@@ -84,7 +84,13 @@ jobs:
       - name: Add version overrides to prevent conflicts
         run: |
           # Override boost version to match local environment (prevent 1.88.0 vs 1.86.0 conflict)
-          echo "Forcing boost/1.86.0 to match local build environment"
+          echo "Adding boost/1.86.0 override to profile"
+          PROFILE_PATH=$(conan profile path default)
+          if ! grep -q "\[replace_requires\]" "$PROFILE_PATH"; then
+            echo "" >> "$PROFILE_PATH"
+            echo "[replace_requires]" >> "$PROFILE_PATH"
+          fi
+          echo "boost/*: boost/1.86.0" >> "$PROFILE_PATH"
 
       - name: Display Conan profile
         run: |
@@ -94,7 +100,6 @@ jobs:
       - name: Install Cura dependencies
         run: |
           conan install . --build=missing \
-            --require-override=boost/1.86.0 \
             -c tools.system.package_manager:mode=install \
             -c tools.system.package_manager:sudo=True \
             ${{ inputs.conan_args }}
@@ -108,7 +113,6 @@ jobs:
         run: |
           conan create . ${{ inputs.cura_conan_version && format('--version={0}', inputs.cura_conan_version) || '' }} \
             --build=missing \
-            --require-override=boost/1.86.0 \
             -c tools.system.package_manager:mode=install \
             -c tools.system.package_manager:sudo=True \
             -o cura:enterprise=${{ inputs.enterprise }} \
@@ -129,7 +133,6 @@ jobs:
           conan install --requires="cura/${{ inputs.cura_conan_version || '5.12.0-alpha.0' }}" \
             --deployer-package="*" \
             --deployer-folder=. \
-            --require-override=boost/1.86.0 \
             -c tools.system.package_manager:mode=install \
             -c tools.system.package_manager:sudo=True
 
