@@ -81,6 +81,11 @@ jobs:
           conan config install https://github.com/Ultimaker/conan-config.git
           conan profile detect --force
 
+      - name: Add version overrides to prevent conflicts
+        run: |
+          # Override boost version to match local environment (prevent 1.88.0 vs 1.86.0 conflict)
+          echo "Forcing boost/1.86.0 to match local build environment"
+
       - name: Display Conan profile
         run: |
           conan profile show
@@ -89,6 +94,7 @@ jobs:
       - name: Install Cura dependencies
         run: |
           conan install . --build=missing \
+            --require-override=boost/1.86.0 \
             -c tools.system.package_manager:mode=install \
             -c tools.system.package_manager:sudo=True \
             ${{ inputs.conan_args }}
@@ -102,6 +108,7 @@ jobs:
         run: |
           conan create . ${{ inputs.cura_conan_version && format('--version={0}', inputs.cura_conan_version) || '' }} \
             --build=missing \
+            --require-override=boost/1.86.0 \
             -c tools.system.package_manager:mode=install \
             -c tools.system.package_manager:sudo=True \
             -o cura:enterprise=${{ inputs.enterprise }} \
@@ -122,6 +129,7 @@ jobs:
           conan install --requires="cura/${{ inputs.cura_conan_version || '5.12.0-alpha.0' }}" \
             --deployer-package="*" \
             --deployer-folder=. \
+            --require-override=boost/1.86.0 \
             -c tools.system.package_manager:mode=install \
             -c tools.system.package_manager:sudo=True
 
