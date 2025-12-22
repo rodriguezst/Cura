@@ -3,9 +3,6 @@ run-name: ${{ inputs.cura_conan_version }} ARM64 by @${{ github.actor }}
 
 on:
   push:
-    branches:
-      - main
-      - 'CURA-*'
   pull_request:
     branches:
       - main
