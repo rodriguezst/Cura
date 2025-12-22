@@ -83,14 +83,16 @@ jobs:
 
       - name: Add version overrides to prevent conflicts
         run: |
-          # Override boost version to match local environment (prevent 1.88.0 vs 1.86.0 conflict)
-          echo "Adding boost/1.86.0 override to profile"
+          # Override package versions to match local environment
+          echo "Adding version overrides to profile"
           PROFILE_PATH=$(conan profile path default)
           if ! grep -q "\[replace_requires\]" "$PROFILE_PATH"; then
             echo "" >> "$PROFILE_PATH"
             echo "[replace_requires]" >> "$PROFILE_PATH"
           fi
+          # Pin versions to match tested local build (prevent remote repo updates from breaking builds)
           echo "boost/*: boost/1.86.0" >> "$PROFILE_PATH"
+          echo "spdlog/*: spdlog/1.15.1" >> "$PROFILE_PATH"
 
       - name: Display Conan profile
         run: |
