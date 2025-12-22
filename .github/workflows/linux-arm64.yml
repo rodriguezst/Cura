@@ -2,6 +2,13 @@ name: Linux ARM64 Installer
 run-name: ${{ inputs.cura_conan_version }} ARM64 by @${{ github.actor }}
 
 on:
+  push:
+    branches:
+      - main
+      - 'CURA-*'
+  pull_request:
+    branches:
+      - main
   workflow_dispatch:
     inputs:
       cura_conan_version:
@@ -27,7 +34,6 @@ on:
         default: false
         required: true
         type: boolean
-  push:
 
 jobs:
   linux-installer-arm64:
@@ -80,7 +86,7 @@ jobs:
 
       - name: Display Conan profile
         run: |
-          conan profile show --profile:host default
+          conan profile show default
           conan remote list
 
       - name: Install Cura dependencies
@@ -88,7 +94,6 @@ jobs:
           conan install . --build=missing \
             -c tools.system.package_manager:mode=install \
             -c tools.system.package_manager:sudo=True \
-            -c tools.graph:require_overrides=boost/1.86.0 \
             ${{ inputs.conan_args }}
         timeout-minutes: 120  # ARM builds take longer
 
@@ -104,11 +109,78 @@ jobs:
             -o cura:staging=${{ inputs.staging }} \
             ${{ inputs.conan_args }}
 
-      - name: Upload ARM64 package
+      - name: Install additional dependencies for AppImage
+        run: |
+          sudo DEBIAN_FRONTEND=noninteractive apt install -yq \
+            file libegl1 libgl1 libfontconfig1 libxrender1 \
+            libxi6 libxrandr2 libxcursor1 libxinerama1 libxcb-cursor0
+          python3 -m pip install --break-system-packages pyinstaller jinja2
+
+      - name: Deploy Cura for PyInstaller
+        run: |
+          mkdir -p appimage_build
+          cd appimage_build
+          conan install --requires="cura/${{ inputs.cura_conan_version || '5.12.0-alpha.0' }}" \
+            --deployer-package="*" \
+            --deployer-folder=. \
+            -c tools.system.package_manager:mode=install \
+            -c tools.system.package_manager:sudo=True
+
+      - name: Run PyInstaller
+        run: |
+          cd appimage_build
+          export PYTHONPATH="${PWD}/venv/lib/python3.12/site-packages:${PYTHONPATH}"
+          pyinstaller UltiMaker-Cura.spec
+
+      - name: Download appimagetool
+        run: |
+          cd appimage_build/dist
+          wget -q https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-aarch64.AppImage
+          chmod +x appimagetool-aarch64.AppImage
+
+      - name: Create AppImage
+        run: |
+          cd appimage_build/dist
+          export APPIMAGETOOL_LOCATION=./appimagetool-aarch64.AppImage
+          python3 ../../packaging/AppImage/create_appimage.py \
+            UltiMaker-Cura \
+            "${{ inputs.cura_conan_version || '5.12.0-alpha.0' }}" \
+            "UltiMaker-Cura-${{ inputs.cura_conan_version || '5.12.0-alpha.0' }}-Linux-ARM64.AppImage" || true
+
+      - name: Verify AppImage
+        run: |
+          cd appimage_build/dist
+          if [ -f "UltiMaker-Cura-${{ inputs.cura_conan_version || '5.12.0-alpha.0' }}-Linux-ARM64.AppImage" ]; then
+            ls -lh *.AppImage | grep -v appimagetool
+            echo "AppImage created successfully!"
+          else
+            echo "Warning: AppImage was not created"
+            exit 1
+          fi
+
+      - name: Upload ARM64 package artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: cura-linux-arm64-${{ inputs.cura_conan_version || github.sha }}
+          name: cura-linux-arm64-package-${{ inputs.cura_conan_version || github.sha }}
           path: |
             ~/.conan2/p/*/p/
             build/
           retention-days: 7
+
+      - name: Upload AppImage artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: UltiMaker-Cura-${{ inputs.cura_conan_version || github.sha }}-Linux-ARM64-AppImage
+          path: appimage_build/dist/*.AppImage
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Upload AppImage to release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v1
+        with:
+          files: appimage_build/dist/UltiMaker-Cura-*.AppImage
+          draft: false
+          prerelease: ${{ contains(github.ref, 'alpha') || contains(github.ref, 'beta') }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
