@@ -80,6 +80,32 @@ jobs:
           cd ~/cura-build
           git clone https://github.com/Ultimaker/CuraEngine.git
 
+      - name: Install Conan for CuraEngine dependencies
+        run: |
+          pip install conan==2.7.1
+          conan profile detect --force
+
+      - name: Install CuraEngine Conan dependencies
+        run: |
+          cd ~/cura-build/CuraEngine
+          conan install . --build=missing --update -s compiler.libcxx=libstdc++11
+
+      - name: Patch CuraEngine CMakeLists.txt
+        run: |
+          cd ~/cura-build/CuraEngine
+          # Patch: Remove standardprojectsettings dependency
+          sed -i 's/find_package(standardprojectsettings REQUIRED)/# find_package(standardprojectsettings REQUIRED)/' CMakeLists.txt
+          sed -i 's/AssureOutOfSourceBuilds()/# AssureOutOfSourceBuilds()/' CMakeLists.txt
+          # Also patch conanfile.cmake to use Protobuf instead of protobuf
+          sed -i 's/find_package(protobuf REQUIRED)/find_package(Protobuf REQUIRED)/' conanfile.cmake || true
+
+      - name: Build CuraEngine
+        run: |
+          cd ~/cura-build/CuraEngine
+          mkdir build && cd build
+          cmake .. -DCMAKE_BUILD_TYPE=Release -DENABLE_ARCUS=OFF -DENABLE_PLUGINS=OFF
+          make -j$(nproc)
+
       - name: Clone fdm_materials
         run: |
           cd ~/cura-build
@@ -255,6 +281,8 @@ jobs:
           mkdir -p pyArcus
           # Copy SIP files and source for Python bindings
           cp -r python/* pyArcus/ || true
+          # Install sip-build from pip (more reliable than apt)
+          pip install 'sip>=6,<7'
           # Create pyproject.toml for SIP build
           cat > pyArcus/pyproject.toml << 'EOF'
           [build-system]
