@@ -142,18 +142,16 @@ jobs:
           echo "=== Default profile contents ==="
           conan profile show -pr:h default
           
-          # Step 4: Create ARM64-specific overrides if needed
+          # Step 4: Add ARM64-specific options to the default profile
+          # NOTE: Only add [options] section - [settings] already exists with correct arch=armv8
           cat >> ~/.conan2/profiles/default << 'EOF'
-          
-          [settings]
-          arch=armv8
-          
-          [options]
-          # Ensure boost is header-only to avoid binary conflicts
-          boost/*:header_only=True
-          # Use system OpenSSL to avoid version conflicts
-          openssl/*:shared=True
-          EOF
+
+[options]
+# Ensure boost is header-only to avoid binary conflicts
+boost/*:header_only=True
+# Use system OpenSSL to avoid version conflicts  
+openssl/*:shared=True
+EOF
           
           echo "=== Updated profile ==="
           conan profile show
