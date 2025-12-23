@@ -83,9 +83,10 @@ jobs:
 
       - name: Configure build strategy
         run: |
-          # Force building key packages from source to avoid prebuilt binary dependency conflicts
-          # Prebuilt binaries may have incompatible baked-in dependencies
-          echo "Will build boost, spdlog, and other conflicting packages from source"
+          # Force building ALL packages from source to avoid prebuilt binary dependency conflicts
+          # Prebuilt binaries have baked-in dependencies that cause version conflicts
+          # ARM64 has limited prebuilt binaries anyway, so build from source is standard
+          echo "Will build all packages from source (--build=*) to ensure consistent dependencies"
 
       - name: Display Conan profile
         run: |
@@ -95,15 +96,11 @@ jobs:
       - name: Install Cura dependencies
         run: |
           conan install . \
-            --build=missing \
-            --build=boost/* \
-            --build=spdlog/* \
-            --build=dulcificum/* \
-            --build=asio-grpc/* \
+            --build=* \
             -c tools.system.package_manager:mode=install \
             -c tools.system.package_manager:sudo=True \
             ${{ inputs.conan_args }}
-        timeout-minutes: 120  # ARM builds take longer
+        timeout-minutes: 180  # Building everything from source takes longer
 
       - name: Build Cura
         run: |
@@ -112,11 +109,7 @@ jobs:
       - name: Create Cura package
         run: |
           conan create . ${{ inputs.cura_conan_version && format('--version={0}', inputs.cura_conan_version) || '' }} \
-            --build=missing \
-            --build=boost/* \
-            --build=spdlog/* \
-            --build=dulcificum/* \
-            --build=asio-grpc/* \
+            --build=* \
             -c tools.system.package_manager:mode=install \
             -c tools.system.package_manager:sudo=True \
             -o cura:enterprise=${{ inputs.enterprise }} \
@@ -137,11 +130,7 @@ jobs:
           conan install --requires="cura/${{ inputs.cura_conan_version || '5.12.0-alpha.0' }}" \
             --deployer-package="*" \
             --deployer-folder=. \
-            --build=missing \
-            --build=boost/* \
-            --build=spdlog/* \
-            --build=dulcificum/* \
-            --build=asio-grpc/* \
+            --build=* \
             -c tools.system.package_manager:mode=install \
             -c tools.system.package_manager:sudo=True
 
@@ -203,4 +192,3 @@ jobs:
           prerelease: ${{ contains(github.ref, 'alpha') || contains(github.ref, 'beta') }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          
