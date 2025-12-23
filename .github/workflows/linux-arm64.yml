@@ -38,6 +38,11 @@ env:
   CONAN_PASSWORD: ${{ secrets.CONAN_PASS }}
   # Pin versions to avoid conflicts
   CURA_VERSION: ${{ inputs.cura_conan_version || '5.12.0-alpha.0' }}
+  # Version overrides to resolve dependency conflicts
+  # Format: --require-override="pkg/version" for each conflict
+  # dulcificum/5.10.0 wants spdlog/1.12.0, curaengine wants spdlog/1.15.1
+  VERSION_OVERRIDES: >-
+    --require-override="spdlog/1.15.1"
 
 jobs:
   linux-installer-arm64:
@@ -146,12 +151,12 @@ jobs:
           # NOTE: Only add [options] section - [settings] already exists with correct arch=armv8
           cat >> ~/.conan2/profiles/default << 'EOF'
 
-          [options]
-          # Ensure boost is header-only to avoid binary conflicts
-          boost/*:header_only=True
-          # Use system OpenSSL to avoid version conflicts  
-          openssl/*:shared=True
-          EOF
+[options]
+# Ensure boost is header-only to avoid binary conflicts
+boost/*:header_only=True
+# Use system OpenSSL to avoid version conflicts  
+openssl/*:shared=True
+EOF
           
           echo "=== Updated profile ==="
           conan profile show
@@ -193,15 +198,42 @@ jobs:
           conan profile show
 
       # ============================================================
-      # STEP 5: Generate lockfile first to resolve all versions
+      # STEP 5: Analyze dependency graph (diagnostic)
+      # ============================================================
+      - name: Analyze dependency graph
+        run: |
+          echo "=== Analyzing dependency graph for potential conflicts ==="
+          # This helps identify version conflicts before the long build
+          conan graph info . \
+            $VERSION_OVERRIDES \
+            -c tools.system.package_manager:mode=install \
+            -c tools.system.package_manager:sudo=True \
+            ${{ inputs.conan_args }} 2>&1 | tee graph_info.txt || true
+          
+          # Check for any conflict warnings
+          if grep -i "conflict" graph_info.txt; then
+            echo "⚠️  Potential conflicts detected - check VERSION_OVERRIDES in workflow"
+          else
+            echo "✅ No obvious conflicts in dependency graph"
+          fi
+
+      # ============================================================
+      # STEP 6: Generate lockfile to resolve all versions
       # This catches version conflicts BEFORE the long build
       # ============================================================
       - name: Generate dependency lockfile
         run: |
           echo "Generating lockfile to resolve all dependency versions..."
+          echo "Using version overrides: $VERSION_OVERRIDES"
+          
+          # Handle known version conflicts with overrides (defined in env.VERSION_OVERRIDES)
+          # dulcificum/5.10.0 requires spdlog/1.12.0 but curaengine needs 1.15.1
+          # Force the newer version (1.15.1) as it's usually backward compatible
+          
           conan lock create . \
             --lockfile-out=conan.lock \
             --build=missing \
+            $VERSION_OVERRIDES \
             -c tools.system.package_manager:mode=install \
             -c tools.system.package_manager:sudo=True \
             ${{ inputs.conan_args }}
@@ -210,7 +242,7 @@ jobs:
           cat conan.lock | head -100
 
       # ============================================================
-      # STEP 6: Install dependencies using lockfile
+      # STEP 7: Install dependencies using lockfile
       # ============================================================
       - name: Install Cura dependencies
         run: |
@@ -218,13 +250,14 @@ jobs:
             --lockfile=conan.lock \
             --output-folder=build \
             --build=missing \
+            $VERSION_OVERRIDES \
             -c tools.system.package_manager:mode=install \
             -c tools.system.package_manager:sudo=True \
             ${{ inputs.conan_args }}
         timeout-minutes: 180
 
       # ============================================================
-      # STEP 7: Build Cura
+      # STEP 8: Build Cura
       # ============================================================
       - name: Build Cura
         run: |
@@ -238,7 +271,7 @@ jobs:
         timeout-minutes: 60
 
       # ============================================================
-      # STEP 8: Create Conan package
+      # STEP 9: Create Conan package
       # ============================================================
       - name: Create Cura package
         run: |
@@ -246,6 +279,7 @@ jobs:
             --lockfile=conan.lock \
             --version="${{ env.CURA_VERSION }}" \
             --build=missing \
+            $VERSION_OVERRIDES \
             -c tools.system.package_manager:mode=install \
             -c tools.system.package_manager:sudo=True \
             -o cura/*:enterprise=${{ inputs.enterprise || 'False' }} \
@@ -253,7 +287,7 @@ jobs:
             ${{ inputs.conan_args }}
 
       # ============================================================
-      # STEP 9: Setup AppImage build
+      # STEP 10: Setup AppImage build
       # ============================================================
       - name: Install AppImage dependencies
         run: |
@@ -332,7 +366,7 @@ jobs:
           fi
 
       # ============================================================
-      # STEP 10: Upload artifacts
+      # STEP 11: Upload artifacts
       # ============================================================
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
