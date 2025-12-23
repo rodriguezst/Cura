@@ -134,28 +134,40 @@ jobs:
 
       # ============================================================
       # STEP 3: Patch and build libArcus
-      # Must remove standardprojectsettings dependency
+      # Must remove standardprojectsettings dependency and its functions
       # ============================================================
       - name: Build libArcus
         run: |
           cd $BUILD_DIR/libArcus
           
           echo "Patching libArcus CMakeLists.txt..."
-          sed -i 's/find_package(standardprojectsettings REQUIRED)/# Removed: find_package(standardprojectsettings REQUIRED)/' CMakeLists.txt
-          sed -i 's/find_package(protobuf REQUIRED)/find_package(Protobuf REQUIRED)/' CMakeLists.txt
-          sed -i 's/set_project_warnings(Arcus)/target_compile_options(Arcus PRIVATE -Wall -Wextra)/' CMakeLists.txt
           
-          # Also need to fix any sip-related issues
-          if grep -q "sipbuildtool" CMakeLists.txt; then
-            sed -i 's/find_package(sipbuildtool REQUIRED)/# Removed: find_package(sipbuildtool REQUIRED)/' CMakeLists.txt
-          fi
+          # Remove standardprojectsettings dependency
+          sed -i 's/find_package(standardprojectsettings REQUIRED)/# Removed: find_package(standardprojectsettings REQUIRED)/' CMakeLists.txt
+          
+          # Fix protobuf package name (case sensitivity)
+          sed -i 's/find_package(protobuf REQUIRED)/find_package(Protobuf REQUIRED)/' CMakeLists.txt
+          
+          # Remove all standardprojectsettings functions
+          sed -i 's/set_project_warnings(Arcus)/# Removed: set_project_warnings(Arcus)/' CMakeLists.txt
+          sed -i 's/enable_sanitizers(Arcus)/# Removed: enable_sanitizers(Arcus)/' CMakeLists.txt
+          sed -i 's/set_project_warnings(ArcusTest)/# Removed: set_project_warnings(ArcusTest)/' CMakeLists.txt
+          sed -i 's/enable_sanitizers(ArcusTest)/# Removed: enable_sanitizers(ArcusTest)/' CMakeLists.txt
+          
+          # Remove sipbuildtool if present
+          sed -i 's/find_package(sipbuildtool REQUIRED)/# Removed: find_package(sipbuildtool REQUIRED)/' CMakeLists.txt
+          
+          # Show patched CMakeLists.txt for debugging
+          echo "=== Patched CMakeLists.txt (first 50 lines) ==="
+          head -50 CMakeLists.txt
           
           echo "Building libArcus..."
           mkdir -p build && cd build
           cmake .. \
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_INSTALL_PREFIX=/usr/local \
-            -DBUILD_PYTHON=OFF
+            -DBUILD_PYTHON=OFF \
+            -DBUILD_TESTING=OFF
           make -j$(nproc)
           sudo make install
           sudo ldconfig
@@ -172,19 +184,30 @@ jobs:
           cd $BUILD_DIR/libSavitar
           
           echo "Patching libSavitar CMakeLists.txt..."
-          sed -i 's/find_package(standardprojectsettings REQUIRED)/# Removed: find_package(standardprojectsettings REQUIRED)/' CMakeLists.txt
-          sed -i 's/set_project_warnings(Savitar)/target_compile_options(Savitar PRIVATE -Wall -Wextra)/' CMakeLists.txt
           
-          if grep -q "sipbuildtool" CMakeLists.txt; then
-            sed -i 's/find_package(sipbuildtool REQUIRED)/# Removed: find_package(sipbuildtool REQUIRED)/' CMakeLists.txt
-          fi
+          # Remove standardprojectsettings dependency
+          sed -i 's/find_package(standardprojectsettings REQUIRED)/# Removed: find_package(standardprojectsettings REQUIRED)/' CMakeLists.txt
+          
+          # Remove all standardprojectsettings functions
+          sed -i 's/set_project_warnings(Savitar)/# Removed: set_project_warnings(Savitar)/' CMakeLists.txt
+          sed -i 's/enable_sanitizers(Savitar)/# Removed: enable_sanitizers(Savitar)/' CMakeLists.txt
+          sed -i 's/set_project_warnings(SavitarTest)/# Removed: set_project_warnings(SavitarTest)/' CMakeLists.txt
+          sed -i 's/enable_sanitizers(SavitarTest)/# Removed: enable_sanitizers(SavitarTest)/' CMakeLists.txt
+          
+          # Remove sipbuildtool if present
+          sed -i 's/find_package(sipbuildtool REQUIRED)/# Removed: find_package(sipbuildtool REQUIRED)/' CMakeLists.txt
+          
+          # Show patched CMakeLists.txt for debugging
+          echo "=== Patched CMakeLists.txt (first 50 lines) ==="
+          head -50 CMakeLists.txt
           
           echo "Building libSavitar..."
           mkdir -p build && cd build
           cmake .. \
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_INSTALL_PREFIX=/usr/local \
-            -DBUILD_PYTHON=OFF
+            -DBUILD_PYTHON=OFF \
+            -DBUILD_TESTING=OFF
           make -j$(nproc)
           sudo make install
           sudo ldconfig
