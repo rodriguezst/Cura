@@ -81,6 +81,17 @@ jobs:
           conan config install https://github.com/Ultimaker/conan-config.git
           conan profile detect --force
 
+      - name: Configure Conan remotes to prevent version conflicts
+        run: |
+          # Prioritize cura-conan2 over ConanCenter to prevent version conflicts
+          # When a package exists in both remotes, use the cura-conan2 version
+          # This ensures consistent versions aligned with Ultimaker's tested dependencies
+          echo "Reordering remotes: cura-conan2 first, conancenter second"
+          conan remote remove conancenter
+          conan remote add conancenter https://center2.conan.io --index=1
+          echo "Current remote order (cura-conan2 searched first):"
+          conan remote list
+
       - name: Configure build strategy
         run: |
           # Force building ALL packages from source to avoid prebuilt binary dependency conflicts
