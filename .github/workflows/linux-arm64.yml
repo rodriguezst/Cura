@@ -151,12 +151,12 @@ jobs:
           # NOTE: Only add [options] section - [settings] already exists with correct arch=armv8
           cat >> ~/.conan2/profiles/default << 'EOF'
 
-[options]
-# Ensure boost is header-only to avoid binary conflicts
-boost/*:header_only=True
-# Use system OpenSSL to avoid version conflicts  
-openssl/*:shared=True
-EOF
+          [options]
+          # Ensure boost is header-only to avoid binary conflicts
+          boost/*:header_only=True
+          # Use system OpenSSL to avoid version conflicts  
+          openssl/*:shared=True
+          EOF
           
           echo "=== Updated profile ==="
           conan profile show
