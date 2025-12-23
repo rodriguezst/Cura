@@ -81,18 +81,11 @@ jobs:
           conan config install https://github.com/Ultimaker/conan-config.git
           conan profile detect --force
 
-      - name: Add version overrides to prevent conflicts
+      - name: Configure build strategy
         run: |
-          # Override package versions to match local environment
-          echo "Adding version overrides to profile"
-          PROFILE_PATH=$(conan profile path default)
-          if ! grep -q "\[replace_requires\]" "$PROFILE_PATH"; then
-            echo "" >> "$PROFILE_PATH"
-            echo "[replace_requires]" >> "$PROFILE_PATH"
-          fi
-          # Pin versions to match tested local build (prevent remote repo updates from breaking builds)
-          echo "boost/*: boost/1.86.0" >> "$PROFILE_PATH"
-          echo "spdlog/*: spdlog/1.15.1" >> "$PROFILE_PATH"
+          # Force building key packages from source to avoid prebuilt binary dependency conflicts
+          # Prebuilt binaries may have incompatible baked-in dependencies
+          echo "Will build boost, spdlog, and other conflicting packages from source"
 
       - name: Display Conan profile
         run: |
@@ -101,7 +94,12 @@ jobs:
 
       - name: Install Cura dependencies
         run: |
-          conan install . --build=missing \
+          conan install . \
+            --build=missing \
+            --build=boost/* \
+            --build=spdlog/* \
+            --build=dulcificum/* \
+            --build=asio-grpc/* \
             -c tools.system.package_manager:mode=install \
             -c tools.system.package_manager:sudo=True \
             ${{ inputs.conan_args }}
@@ -115,6 +113,10 @@ jobs:
         run: |
           conan create . ${{ inputs.cura_conan_version && format('--version={0}', inputs.cura_conan_version) || '' }} \
             --build=missing \
+            --build=boost/* \
+            --build=spdlog/* \
+            --build=dulcificum/* \
+            --build=asio-grpc/* \
             -c tools.system.package_manager:mode=install \
             -c tools.system.package_manager:sudo=True \
             -o cura:enterprise=${{ inputs.enterprise }} \
@@ -135,6 +137,11 @@ jobs:
           conan install --requires="cura/${{ inputs.cura_conan_version || '5.12.0-alpha.0' }}" \
             --deployer-package="*" \
             --deployer-folder=. \
+            --build=missing \
+            --build=boost/* \
+            --build=spdlog/* \
+            --build=dulcificum/* \
+            --build=asio-grpc/* \
             -c tools.system.package_manager:mode=install \
             -c tools.system.package_manager:sudo=True
 
@@ -196,3 +203,4 @@ jobs:
           prerelease: ${{ contains(github.ref, 'alpha') || contains(github.ref, 'beta') }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          
