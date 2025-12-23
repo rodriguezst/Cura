@@ -75,7 +75,7 @@ jobs:
 
       - name: Configure Conan
         run: |
-          conan config install https://github.com/Ultimaker/conan-config.git#commit=2f501d5fa8e9399405cc9c7f82a692760daa3f78 -t git
+          conan config install https://github.com/Ultimaker/conan-config/archive/2f501d5fa8e9399405cc9c7f82a692760daa3f78.zip
           conan profile detect --force
 
       - name: Display Conan profile
