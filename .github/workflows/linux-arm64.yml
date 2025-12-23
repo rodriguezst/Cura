@@ -1,10 +1,26 @@
-name: Linux ARM64 Build
-
-run-name: ARM64 build by @${{ github.actor }}
+name: Linux ARM64 Installer
+run-name: ${{ inputs.cura_conan_version }} ARM64 by @${{ github.actor }}
 
 on:
+  push:
+  pull_request:
+    branches:
+      - main
   workflow_dispatch:
     inputs:
+      cura_conan_version:
+        description: 'Cura Conan Version'
+        default: ''
+        type: string
+      package_overrides:
+        description: 'List of specific packages to be used (space-separated)'
+        default: ''
+        type: string
+      conan_args:
+        description: 'Conan args'
+        default: ''
+        required: false
+        type: string
       enterprise:
         description: 'Build Cura as an Enterprise edition'
         default: false
@@ -15,422 +31,181 @@ on:
         default: false
         required: true
         type: boolean
-  push:
-    paths:
-      - 'cura/**'
-      - 'plugins/**'
-      - 'resources/**'
-      - 'conanfile.py'
-      - 'conandata.yml'
-      - '.github/workflows/linux-arm64.yml'
-  pull_request:
-    branches:
-      - main
-      - '[0-9]+.[0-9]+'
-    paths:
-      - 'cura/**'
-      - 'plugins/**'
-      - 'resources/**'
-      - 'conanfile.py'
-      - 'conandata.yml'
-      - '.github/workflows/linux-arm64.yml'
 
 jobs:
-  linux-arm64:
-    name: Build Cura for Linux ARM64
-    runs-on: ubuntu-24.04-arm
+  linux-installer-arm64:
+    runs-on: ubuntu-24.04-arm  # Use ARM64 runner
 
     steps:
-      - name: Checkout Cura repository
+      - name: Checkout code
         uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
         with:
-          fetch-depth: 0
+          python-version: '3.12'
+          architecture: 'arm64'
 
       - name: Install system dependencies
         run: |
-          export DEBIAN_FRONTEND=noninteractive
-          sudo apt-get update
-          sudo apt-get install -yq \
-            build-essential cmake ninja-build pkg-config \
-            qt6-base-dev qt6-base-dev-tools qt6-tools-dev qt6-declarative-dev \
-            qt6-l10n-tools libqt6svg6-dev libqt6charts6-dev \
-            protobuf-compiler libprotobuf-dev libprotoc-dev python3-protobuf \
-            libpugixml-dev libpython3-dev python3-pynest2d \
-            python3-venv python3-pip python3-sip \
-            xvfb libxkbcommon-x11-0 libxcb-cursor0 \
-            git
+          sudo apt update
+          sudo DEBIAN_FRONTEND=noninteractive apt install -yq \
+            python3-pip python3-venv python3-dev python3-full pipx \
+            cmake git build-essential ninja-build gettext \
+            qt6-base-dev qt6-declarative-dev libqt6svg6-dev \
+            libgl1-mesa-dev libglu1-mesa-dev pkg-config \
+            libx11-dev libxcb1-dev libxkbcommon-dev \
+            python3-git python3-yaml python3-jinja2 python3-requests \
+            libxcb-cursor-dev libxcb-icccm4-dev libxcb-image0-dev \
+            libxcb-keysyms1-dev libxcb-randr0-dev libxcb-render-util0-dev \
+            libxcb-shape0-dev libxcb-sync-dev libxcb-xfixes0-dev libxcb-xinerama0-dev \
+            libnsl-dev libtirpc-dev
 
-      - name: Set up Python virtual environment
+      - name: Install SIP, PyQt6 and setup qmake
         run: |
-          python3 -m venv venv
-          source venv/bin/activate
-          pip install --upgrade pip
+          python3 -m pip install --break-system-packages "sip>=6,<7"
+          python3 -m pip install --break-system-packages --only-binary :all: PyQt6>=6.8.0
+          sudo ln -sf /usr/bin/qmake6 /usr/bin/qmake || true
 
-      - name: Create build directory for dependencies
+      - name: Install Conan
         run: |
-          mkdir -p ~/cura-build
+          pipx install conan==2.7.1
+          echo "$HOME/.local/bin" >> $GITHUB_PATH
 
-      - name: Clone Uranium
+      - name: Inject Conan dependencies
         run: |
-          cd ~/cura-build
-          git clone https://github.com/Ultimaker/Uranium.git
+          pipx inject conan gitpython pyyaml jinja2 requests
 
-      - name: Clone CuraEngine
+      - name: Configure Conan
         run: |
-          cd ~/cura-build
-          git clone https://github.com/Ultimaker/CuraEngine.git
-
-      - name: Install Conan for CuraEngine dependencies
-        run: |
-          pip install conan==2.7.1
+          # Order matters: detect default profile first, then install cura config
           conan profile detect --force
+          conan config install https://github.com/Ultimaker/conan-config.git
+          # global.conf now sets core:default_profile=cura.jinja (which includes(default))
+          # This provides critical Cura-specific settings like boost/*:header_only=True
 
-      - name: Install CuraEngine Conan dependencies
+      - name: Configure Conan remotes to prevent version conflicts
         run: |
-          cd ~/cura-build/CuraEngine
-          # Patch conanfile.py to remove private sentrylibrary dependency
-          sed -i "s/python_requires = \"sentrylibrary\/1.0.0\"/# python_requires = \"sentrylibrary\/1.0.0\"/" conanfile.py
-          # Also disable Sentry in conanfile.py
-          sed -i 's/options\["sentry"\].*=.*/options["sentry"] = [False, "Use Sentry crash reporting"]/' conanfile.py || true
-          conan install . --build=missing --update -s compiler.libcxx=libstdc++11 -o sentry=False
+          # Remove ConanCenter entirely to prevent version conflicts
+          # All packages should come from cura-conan2 for consistent versions
+          # If this fails, we'll know which packages are missing and can decide strategy
+          echo "Removing ConanCenter to use only cura-conan2"
+          conan remote disable conancenter
+          echo "Active remotes (cura-conan2 only):"
+          conan remote list
 
-      - name: Patch CuraEngine CMakeLists.txt
+      - name: Configure build strategy
         run: |
-          cd ~/cura-build/CuraEngine
-          # Patch: Remove standardprojectsettings dependency
-          sed -i 's/find_package(standardprojectsettings REQUIRED)/# find_package(standardprojectsettings REQUIRED)/' CMakeLists.txt
-          sed -i 's/AssureOutOfSourceBuilds()/# AssureOutOfSourceBuilds()/' CMakeLists.txt
-          # Also patch conanfile.cmake to use Protobuf instead of protobuf
-          sed -i 's/find_package(protobuf REQUIRED)/find_package(Protobuf REQUIRED)/' conanfile.cmake || true
+          # Force building ALL packages from source to avoid prebuilt binary dependency conflicts
+          # Prebuilt binaries have baked-in dependencies that cause version conflicts
+          # ARM64 has limited prebuilt binaries anyway, so build from source is standard
+          echo "Will build all packages from source (--build=*) to ensure consistent dependencies"
 
-      - name: Build CuraEngine
+      - name: Display Conan profile
         run: |
-          cd ~/cura-build/CuraEngine
-          mkdir build && cd build
-          cmake .. -DCMAKE_BUILD_TYPE=Release -DENABLE_ARCUS=OFF -DENABLE_PLUGINS=OFF
-          make -j$(nproc)
+          echo "=== Conan Profile (should be cura.jinja) ==="
+          conan profile show
+          echo "=== Checking for boost header_only option ==="
+          conan profile show | grep -A 1 "boost"
+          echo "=== Conan Remotes ==="
+          conan remote list
 
-      - name: Clone fdm_materials
+      - name: Install Cura dependencies
         run: |
-          cd ~/cura-build
-          git clone https://github.com/Ultimaker/fdm_materials.git
+          conan install . \
+            --build=* \
+            -c tools.system.package_manager:mode=install \
+            -c tools.system.package_manager:sudo=True \
+            ${{ inputs.conan_args }}
+        timeout-minutes: 180  # Building everything from source takes longer
 
-      - name: Clone cura-binary-data
+      - name: Build Cura
         run: |
-          cd ~/cura-build
-          git clone https://github.com/Ultimaker/cura-binary-data.git
+          conan build .
 
-      - name: Clone libArcus
+      - name: Create Cura package
         run: |
-          cd ~/cura-build
-          git clone https://github.com/Ultimaker/libArcus.git
+          conan create . ${{ inputs.cura_conan_version && format('--version={0}', inputs.cura_conan_version) || '' }} \
+            --build=* \
+            -c tools.system.package_manager:mode=install \
+            -c tools.system.package_manager:sudo=True \
+            -o cura:enterprise=${{ inputs.enterprise }} \
+            -o cura:staging=${{ inputs.staging }} \
+            ${{ inputs.conan_args }}
 
-      - name: Clone libSavitar
+      - name: Install additional dependencies for AppImage
         run: |
-          cd ~/cura-build
-          git clone https://github.com/Ultimaker/libSavitar.git
+          sudo DEBIAN_FRONTEND=noninteractive apt install -yq \
+            file libegl1 libgl1 libfontconfig1 libxrender1 \
+            libxi6 libxrandr2 libxcursor1 libxinerama1 libxcb-cursor0
+          python3 -m pip install --break-system-packages pyinstaller jinja2
 
-      - name: Clone libCharon
+      - name: Deploy Cura for PyInstaller
         run: |
-          cd ~/cura-build
-          git clone https://github.com/Ultimaker/libCharon.git
+          mkdir -p appimage_build
+          cd appimage_build
+          conan install --requires="cura/${{ inputs.cura_conan_version || '5.12.0-alpha.0' }}" \
+            --deployer-package="*" \
+            --deployer-folder=. \
+            --build=* \
+            -c tools.system.package_manager:mode=install \
+            -c tools.system.package_manager:sudo=True
 
-      - name: Patch libArcus CMakeLists.txt
+      - name: Run PyInstaller
         run: |
-          cd ~/cura-build/libArcus
-          # Create patched CMakeLists.txt
-          cat > CMakeLists.txt.patched << 'EOF'
-          cmake_policy(SET CMP0091 NEW)
-          cmake_minimum_required(VERSION 3.23)
-          project(libarcus)
+          cd appimage_build
+          export PYTHONPATH="${PWD}/venv/lib/python3.12/site-packages:${PYTHONPATH}"
+          pyinstaller UltiMaker-Cura.spec
 
-          find_package(Protobuf REQUIRED)
-
-          option(ENABLE_SENTRY "Send crash data via Sentry" OFF)
-
-          set(arcus_SRCS
-              src/Socket.cpp
-              src/SocketListener.cpp
-              src/MessageTypeStore.cpp
-              src/PlatformSocket.cpp
-              src/Error.cpp
-          )
-
-          if(BUILD_SHARED_LIBS)
-              add_library(Arcus SHARED ${arcus_SRCS})
-          else()
-              add_library(Arcus STATIC ${arcus_SRCS})
-          endif()
-
-          target_compile_options(Arcus PUBLIC -Wall -Wextra -Wpedantic)
-          find_package(Threads REQUIRED)
-          target_link_libraries(Arcus PUBLIC Threads::Threads)
-
-          target_include_directories(Arcus
-                  PUBLIC
-                      $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
-                      $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
-                  PRIVATE
-                      $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src>
-          )
-          target_link_libraries(Arcus PUBLIC ${Protobuf_LIBRARIES})
-          target_include_directories(Arcus PRIVATE ${Protobuf_INCLUDE_DIRS})
-
-          if(WIN32)
-              target_compile_definitions(Arcus PRIVATE -D_WIN32_WINNT=0x0600)
-              target_link_libraries(Arcus PUBLIC Ws2_32)
-              set_target_properties(Arcus PROPERTIES WINDOWS_EXPORT_ALL_SYMBOLS ON)
-              if (ENABLE_SENTRY)
-                  set_target_properties(Arcus PROPERTIES LINK_FLAGS "/DEBUG:FULL")
-              endif()
-          endif()
-
-          include(GNUInstallDirs)
-          install(TARGETS Arcus
-              LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
-              ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
-              RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
-          )
-          install(DIRECTORY include/ DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
-          EOF
-          mv CMakeLists.txt.patched CMakeLists.txt
-
-      - name: Build and install libArcus
+      - name: Download appimagetool
         run: |
-          cd ~/cura-build/libArcus
-          mkdir build && cd build
-          cmake .. -DCMAKE_BUILD_TYPE=Release
-          make -j$(nproc)
-          sudo make install
+          cd appimage_build/dist
+          wget -q https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-aarch64.AppImage
+          chmod +x appimagetool-aarch64.AppImage
 
-      - name: Build CuraEngine
+      - name: Create AppImage
         run: |
-          cd ~/cura-build/CuraEngine
-          mkdir build && cd build
-          cmake .. -DCMAKE_BUILD_TYPE=Release
-          make -j$(nproc)
+          cd appimage_build/dist
+          export APPIMAGETOOL_LOCATION=./appimagetool-aarch64.AppImage
+          python3 ../../packaging/AppImage/create_appimage.py \
+            UltiMaker-Cura \
+            "${{ inputs.cura_conan_version || '5.12.0-alpha.0' }}" \
+            "UltiMaker-Cura-${{ inputs.cura_conan_version || '5.12.0-alpha.0' }}-Linux-ARM64.AppImage" || true
 
-      - name: Patch libSavitar CMakeLists.txt
+      - name: Verify AppImage
         run: |
-          cd ~/cura-build/libSavitar
-          # Create patched CMakeLists.txt
-          cat > CMakeLists.txt.patched << 'EOF'
-          cmake_policy(SET CMP0091 NEW)
-          cmake_minimum_required(VERSION 3.20)
-          project(libsavitar)
+          cd appimage_build/dist
+          if [ -f "UltiMaker-Cura-${{ inputs.cura_conan_version || '5.12.0-alpha.0' }}-Linux-ARM64.AppImage" ]; then
+            ls -lh *.AppImage | grep -v appimagetool
+            echo "AppImage created successfully!"
+          else
+            echo "Warning: AppImage was not created"
+            exit 1
+          fi
 
-          find_package(pugixml REQUIRED)
-
-          set(savitar_SRCS
-                  src/Namespace.cpp
-                  src/ThreeMFParser.cpp
-                  src/SceneNode.cpp
-                  src/Scene.cpp
-                  src/MeshData.cpp
-                  src/Vertex.cpp
-                  src/Face.cpp
-                  src/UVCoordinate.cpp
-                  src/UVCoordinatesIndices.cpp
-                  src/TextureData.cpp
-          )
-
-          if (BUILD_SHARED_LIBS)
-              add_library(Savitar SHARED ${savitar_SRCS})
-              if (WIN32)
-                  set_target_properties(Savitar PROPERTIES WINDOWS_EXPORT_ALL_SYMBOLS ON)
-              endif ()
-          else ()
-              add_library(Savitar STATIC ${savitar_SRCS})
-          endif ()
-
-          target_compile_options(Savitar PUBLIC -Wall -Wextra -Wpedantic)
-          target_link_libraries(Savitar PUBLIC pugixml::pugixml)
-
-          target_include_directories(Savitar
-                  PUBLIC
-                  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
-                  $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
-                  PRIVATE
-                  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src>
-          )
-
-          include(GNUInstallDirs)
-          install(TARGETS Savitar
-              LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
-              ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
-              RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
-          )
-          install(DIRECTORY include/ DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
-          EOF
-          mv CMakeLists.txt.patched CMakeLists.txt
-
-      - name: Build and install libSavitar
-        run: |
-          cd ~/cura-build/libSavitar
-          mkdir build && cd build
-          cmake .. -DCMAKE_BUILD_TYPE=Release
-          make -j$(nproc)
-          sudo make install
-
-      - name: Build and install libCharon
-        run: |
-          cd ~/cura-build/libCharon
-          mkdir build && cd build
-          cmake .. -DCMAKE_BUILD_TYPE=Release
-          sudo make install
-
-      - name: Build pyArcus (Python bindings)
-        run: |
-          cd ~/cura-build/libArcus
-          mkdir -p pyArcus
-          # Copy SIP files and source for Python bindings
-          cp -r python/* pyArcus/ || true
-          # Install sip-build from pip (more reliable than apt)
-          pip install 'sip>=6,<7'
-          # Create pyproject.toml for SIP build
-          cat > pyArcus/pyproject.toml << 'EOF'
-          [build-system]
-          requires = ["sip >=6, <7"]
-          build-backend = "sipbuild.api"
-
-          [project]
-          name = "pyArcus"
-          version = "6.0.0"
-
-          [tool.sip.bindings.project]
-          name = "Arcus"
-          EOF
-          # Copy sip files from python directory
-          find . -name "*.sip" -exec cp {} pyArcus/ \; 2>/dev/null || true
-          # Build with sip
-          cd pyArcus
-          sip-build --build-type lib
-          cd build
-          make
-          sudo make install
-
-      - name: Install Python dependencies
-        run: |
-          source venv/bin/activate
-          pip install numpy scipy numpy-stl pyclipper networkx \
-              colorlog cryptography keyring python-utils \
-              typing_extensions six PyQt6-WebEngine PyQt6-Qt6
-
-      - name: Create stub pyUvula module
-        run: |
-          source venv/bin/activate
-          mkdir -p $(python3 -c "import site; print(site.getsitepackages()[0])")/pyUvula
-          cat > $(python3 -c "import site; print(site.getsitepackages()[0])")/pyUvula/__init__.py << 'EOF'
-          # Stub for pyUvula - private Ultimaker UV unwrapping library
-          # This provides a minimal interface to prevent import errors
-          EOF
-
-      - name: Set up environment
-        run: |
-          echo "PYTHONPATH=$HOME/cura-build/Uranium:$PYTHONPATH" >> $GITHUB_ENV
-          echo "LD_LIBRARY_PATH=/usr/local/lib:$LD_LIBRARY_PATH" >> $GITHUB_ENV
-
-      - name: Create CuraVersion.py
-        run: |
-          cd $GITHUB_WORKSPACE
-          cat > cura/CuraVersion.py << 'EOF'
-          # Auto-generated for ARM64 build
-          cura_app_name = "UltiMaker Cura"
-          cura_version = "5.12.0"
-          cura_version_full = "5.12.0+arm64"
-          cura_build_type = ""
-          cura_debug_mode = False
-          cura_cloud_api_root = "https://api.ultimaker.com"
-          cura_cloud_api_version = "1"
-          cura_cloud_account_api_root = "https://account.ultimaker.com"
-          cura_marketplace_root = "https://marketplace.ultimaker.com"
-          cura_digital_factory_url = "https://digitalfactory.ultimaker.com"
-          cura_latest_url = "https://github.com/Ultimaker/Cura/releases"
-          EOF
-
-      - name: Copy CuraEngine to Cura directory
-        run: |
-          cp ~/cura-build/CuraEngine/build/Release/CuraEngine $GITHUB_WORKSPACE/
-
-      - name: Create resources symbolic links
-        run: |
-          mkdir -p $GITHUB_WORKSPACE/resources/materials
-          ln -sf ~/cura-build/fdm_materials/* $GITHUB_WORKSPACE/resources/materials/ 2>/dev/null || true
-
-      - name: Test Cura launch (headless with xvfb)
-        run: |
-          source venv/bin/activate
-          cd $GITHUB_WORKSPACE
-          export PYTHONPATH=$HOME/cura-build/Uranium:$PYTHONPATH
-          export LD_LIBRARY_PATH=/usr/local/lib:$LD_LIBRARY_PATH
-          # Test import of main modules
-          python3 -c "
-          import sys
-          print('Python:', sys.version)
-          print('Python executable:', sys.executable)
-          import PyQt6
-          print('PyQt6 version:', PyQt6.QtCore.PYQT_VERSION_STR)
-          print('Qt version:', PyQt6.QtCore.QT_VERSION_STR)
-          import numpy
-          print('NumPy version:', numpy.__version__)
-          print('All imports successful!')
-          "
-          # Test Cura imports
-          python3 -c "
-          import sys
-          sys.path.insert(0, '$HOME/cura-build/Uranium')
-          from cura import CuraVersion
-          print('Cura Version:', CuraVersion.cura_version)
-          print('Cura imports successful!')
-          "
-          # Try launching Cura (will fail at GUI but proves core works)
-          xvfb-run -a python3 cura_app.py --help || true
-
-      - name: Create distribution package
-        run: |
-          mkdir -p cura-arm64-package
-          cp -r $GITHUB_WORKSPACE/cura cura-arm64-package/
-          cp -r $GITHUB_WORKSPACE/plugins cura-arm64-package/
-          cp -r $GITHUB_WORKSPACE/resources cura-arm64-package/
-          cp -r $GITHUB_WORKSPACE/icons cura-arm64-package/
-          cp $GITHUB_WORKSPACE/cura_app.py cura-arm64-package/
-          cp $GITHUB_WORKSPACE/CuraEngine cura-arm64-package/
-          cp -r $HOME/cura-build/Uranium cura-arm64-package/
-          cp -r ~/cura-build/fdm_materials cura-arm64-package/
-          cp -r ~/cura-build/cura-binary-data cura-arm64-package/
-
-          # Create launcher script
-          cat > cura-arm64-package/cura.sh << 'EOF'
-          #!/bin/bash
-          SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
-          export PYTHONPATH="$SCRIPT_DIR/Uranium:$PYTHONPATH"
-          export LD_LIBRARY_PATH="/usr/local/lib:$LD_LIBRARY_PATH"
-          cd "$SCRIPT_DIR"
-          python3 cura_app.py "$@"
-          EOF
-          chmod +x cura-arm64-package/cura.sh
-
-          # Create tarball
-          tar -czf cura-arm64-linux.tar.gz -C cura-arm64-package .
-
-      - name: Upload ARM64 build artifact
+      - name: Upload ARM64 package artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: cura-arm64-linux
-          path: cura-arm64-linux.tar.gz
+          name: cura-linux-arm64-package-${{ inputs.cura_conan_version || github.sha }}
+          path: |
+            ~/.conan2/p/*/p/
+            build/
+          retention-days: 7
+
+      - name: Upload AppImage artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: UltiMaker-Cura-${{ inputs.cura_conan_version || github.sha }}-Linux-ARM64-AppImage
+          path: appimage_build/dist/*.AppImage
+          if-no-files-found: error
           retention-days: 30
 
-      - name: Upload build summary
-        run: |
-          echo "## ARM64 Build Summary" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "- **Python**: $(python3 --version)" >> $GITHUB_STEP_SUMMARY
-          echo "- **Qt**: $(pkg-config --modversion Qt6Core 2>/dev/null || echo 'Not found')" >> $GITHUB_STEP_SUMMARY
-          echo "- **Protobuf**: $(protoc --version | cut -d' ' -f2)" >> $GITHUB_STEP_SUMMARY
-          echo "- **libArcus**: Installed to /usr/local/lib" >> $GITHUB_STEP_SUMMARY
-          echo "- **libSavitar**: Installed to /usr/local/lib" >> $GITHUB_STEP_SUMMARY
-          echo "- **CuraEngine**: Built at ~/cura-build/CuraEngine/build/Release/" >> $GITHUB_STEP_SUMMARY
-          echo "- **libCharon**: Installed to /usr/local/lib/python*" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### Package Contents" >> $GITHUB_STEP_SUMMARY
-          tar -tzf cura-arm64-linux.tar.gz | head -20 >> $GITHUB_STEP_SUMMARY
+      - name: Upload AppImage to release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v1
+        with:
+          files: appimage_build/dist/UltiMaker-Cura-*.AppImage
+          draft: false
+          prerelease: ${{ contains(github.ref, 'alpha') || contains(github.ref, 'beta') }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
