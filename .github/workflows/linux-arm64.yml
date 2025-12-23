@@ -298,21 +298,17 @@ jobs:
         run: |
           cd ${{ github.workspace }}/Cura
           
-          python3 -m venv venv
+          # Use --system-site-packages to access system PyQt6 and other ARM64 packages
+          python3 -m venv --system-site-packages venv
           source venv/bin/activate
           
           pip install --upgrade pip
           
-          # Install Python dependencies
+          # Install additional Python dependencies not in system packages
           pip install \
-            numpy \
-            scipy \
             numpy-stl \
             pyclipper \
-            networkx \
             colorlog \
-            cryptography \
-            keyring \
             python-utils \
             typing_extensions \
             PyYAML \
@@ -324,10 +320,13 @@ jobs:
             trimesh \
             sentry-sdk
           
-          # Install PyQt6 if not using system packages
-          pip install PyQt6 PyQt6-Qt6 PyQt6-sip || echo "Using system PyQt6"
+          # Note: System packages provide: numpy, scipy, networkx, keyring, 
+          # cryptography, PyQt6 (with Qt bindings compiled for ARM64)
           
           echo "Python environment ready"
+          echo "Python version: $(python --version)"
+          echo "Site packages:"
+          python -c "import site; print(site.getsitepackages())"
           pip list
 
       # ============================================================
@@ -422,55 +421,174 @@ jobs:
       - name: Create PyInstaller spec
         run: |
           cd ${{ github.workspace }}/Cura
+          source venv/bin/activate
           
-          cat > UltiMaker-Cura-ARM64.spec << 'EOF'
+          # Get Python version for site-packages path
+          PYTHON_VERSION=$(python3 -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')")
+          echo "Python version: $PYTHON_VERSION"
+          
+          # Create the spec file with proper ARM64 configuration
+          # Based on working spec from miikasyvanen/ultimaker-cura-arm64
+          cat > UltiMaker-Cura-ARM64.spec << SPECEOF
           # -*- mode: python ; coding: utf-8 -*-
           import os
           import sys
+          from pathlib import Path
+          from PyInstaller.utils.hooks import collect_all
           
           block_cipher = None
           
-          # Paths
+          # Paths - use environment variables set by the workflow
           cura_dir = os.path.abspath('.')
           build_dir = os.environ.get('BUILD_DIR', os.path.join(os.path.dirname(cura_dir), 'cura-build'))
+          venv_dir = os.path.join(cura_dir, 'venv')
+          
+          # Detect Python version dynamically
+          python_version = f"{sys.version_info.major}.{sys.version_info.minor}"
+          site_packages = os.path.join(venv_dir, 'lib', f'python{python_version}', 'site-packages')
+          
+          # Fallback if site-packages doesn't exist at expected location
+          if not os.path.exists(site_packages):
+              import site
+              site_packages = site.getsitepackages()[0]
+          
+          print(f"Using site-packages: {site_packages}")
+          
+          # Data files - resources and plugins
+          datas = []
+          
+          # Add Cura resources and plugins
+          cura_plugins = os.path.join(cura_dir, 'plugins')
+          cura_resources = os.path.join(cura_dir, 'resources')
+          if os.path.exists(cura_plugins):
+              datas.append((cura_plugins, 'share/cura/plugins'))
+          if os.path.exists(cura_resources):
+              datas.append((cura_resources, 'share/cura/resources'))
+          
+          # Add Uranium resources and plugins
+          uranium_plugins = os.path.join(build_dir, 'Uranium', 'plugins')
+          uranium_resources = os.path.join(build_dir, 'Uranium', 'resources')
+          uranium_qml = os.path.join(build_dir, 'Uranium', 'UM', 'Qt', 'qml', 'UM')
+          
+          if os.path.exists(uranium_plugins):
+              datas.append((uranium_plugins, 'share/uranium/plugins'))
+          if os.path.exists(uranium_resources):
+              datas.append((uranium_resources, 'share/uranium/resources'))
+          if os.path.exists(uranium_qml):
+              datas.append((uranium_qml, 'PyQt6/Qt6/qml/UM'))
+          
+          # Add materials
+          materials_dir = os.path.join(build_dir, 'fdm_materials', 'materials')
+          if os.path.exists(materials_dir):
+              datas.append((materials_dir, 'share/cura/resources/materials'))
+          
+          # Add binary data
+          binary_data = os.path.join(build_dir, 'cura-binary-data', 'cura', 'resources')
+          if os.path.exists(binary_data):
+              datas.append((binary_data, 'share/cura/resources'))
+          
+          # Binary files - CuraEngine and native libraries
+          binaries = []
+          
+          # CuraEngine binary
+          cura_engine = os.path.join(build_dir, 'bin', 'CuraEngine')
+          if os.path.exists(cura_engine):
+              binaries.append((cura_engine, '.'))
+          
+          # Find and add system libraries we built
+          for lib_pattern in ['libArcus*.so*', 'libSavitar*.so*']:
+              for lib in Path('/usr/local/lib').glob(lib_pattern):
+                  if lib.is_file():
+                      binaries.append((str(lib), '.'))
+          
+          # Add Python extension modules from site-packages if they exist
+          native_modules = [
+              'pySavitar*.so',
+              'pyArcus*.so', 
+              'pynest2d*.so',
+              'pyDulcificum*.so',
+          ]
+          for pattern in native_modules:
+              for so_file in Path(site_packages).rglob(pattern):
+                  binaries.append((str(so_file), '.'))
+          
+          # Hidden imports - modules that PyInstaller might miss
+          hiddenimports = [
+              # Native Cura modules
+              'pySavitar',
+              'pyArcus',
+              'pynest2d',
+              
+              # PyQt6 modules
+              'PyQt6',
+              'PyQt6.QtCore',
+              'PyQt6.QtGui',
+              'PyQt6.QtWidgets',
+              'PyQt6.QtNetwork',
+              'PyQt6.QtOpenGL',
+              'PyQt6.QtQml',
+              'PyQt6.QtQuick',
+              'PyQt6.QtSvg',
+              'PyQt6.sip',
+              
+              # Standard library
+              'logging.handlers',
+              'fcntl',
+              
+              # Third party
+              'zeroconf',
+              'stl',
+              'serial',
+              'trimesh',
+              'networkx',
+              'keyring',
+              'cryptography',
+              'sentry_sdk',
+              'shapely',
+              'numpy',
+              'scipy',
+          ]
+          
+          # Collect all files for these packages
+          packages_to_collect = [
+              'cura',
+              'UM',
+              'Charon',
+              'serial',
+              'sqlite3',
+              'trimesh',
+              'PyQt6',
+              'PyQt6.QtNetwork',
+              'PyQt6.sip',
+              'stl',
+          ]
+          
+          for pkg in packages_to_collect:
+              try:
+                  tmp_ret = collect_all(pkg)
+                  datas += tmp_ret[0]
+                  binaries += tmp_ret[1]
+                  hiddenimports += tmp_ret[2]
+              except Exception as e:
+                  print(f"Warning: Could not collect {pkg}: {e}")
+          
+          # Add any .so files from venv/bin (additional deployed libs)
+          venv_bin = os.path.join(venv_dir, 'bin')
+          if os.path.exists(venv_bin):
+              for so_file in Path(venv_bin).glob('*.so*'):
+                  binaries.append((str(so_file), '.'))
           
           a = Analysis(
-              ['cura_app.py'],
+              [os.path.join(cura_dir, 'cura_app.py')],
               pathex=[
                   cura_dir,
                   os.path.join(build_dir, 'Uranium'),
                   os.path.join(build_dir, 'libCharon'),
+                  site_packages,
               ],
-              binaries=[
-                  (os.path.join(build_dir, 'bin', 'CuraEngine'), '.'),
-              ],
-              datas=[
-                  ('resources', 'resources'),
-                  ('plugins', 'plugins'),
-                  (os.path.join(build_dir, 'Uranium', 'resources'), 'uranium/resources'),
-                  (os.path.join(build_dir, 'Uranium', 'plugins'), 'uranium/plugins'),
-                  (os.path.join(build_dir, 'fdm_materials', 'materials'), 'materials'),
-                  (os.path.join(build_dir, 'cura-binary-data', 'cura'), 'cura-binary-data'),
-              ],
-              hiddenimports=[
-                  'PyQt6',
-                  'PyQt6.QtCore',
-                  'PyQt6.QtGui', 
-                  'PyQt6.QtWidgets',
-                  'PyQt6.QtQml',
-                  'PyQt6.QtQuick',
-                  'PyQt6.QtSvg',
-                  'PyQt6.QtNetwork',
-                  'PyQt6.QtOpenGL',
-                  'numpy',
-                  'scipy',
-                  'trimesh',
-                  'networkx',
-                  'keyring',
-                  'cryptography',
-                  'zeroconf',
-                  'sentry_sdk',
-              ],
+              binaries=binaries,
+              datas=datas,
+              hiddenimports=hiddenimports,
               hookspath=[],
               hooksconfig={},
               runtime_hooks=[],
@@ -492,13 +610,15 @@ jobs:
               debug=False,
               bootloader_ignore_signals=False,
               strip=False,
-              upx=True,
+              upx=False,  # Don't use UPX on ARM64
               console=False,
               disable_windowed_traceback=False,
               argv_emulation=False,
               target_arch=None,
               codesign_identity=None,
               entitlements_file=None,
+              icon=os.path.join(cura_dir, 'packaging', 'icons', 'cura-128.png') if os.path.exists(os.path.join(cura_dir, 'packaging', 'icons', 'cura-128.png')) else None,
+              contents_directory='.',
           )
           
           coll = COLLECT(
@@ -507,11 +627,13 @@ jobs:
               a.zipfiles,
               a.datas,
               strip=False,
-              upx=True,
+              upx=False,  # Don't use UPX on ARM64
               upx_exclude=[],
               name='UltiMaker-Cura',
           )
-          EOF
+          SPECEOF
+          
+          echo "PyInstaller spec file created"
 
       - name: Run PyInstaller
         run: |
