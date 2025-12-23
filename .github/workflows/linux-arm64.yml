@@ -6,11 +6,12 @@ on:
   pull_request:
     branches:
       - main
+      - '[0-9]+.[0-9]+'
   workflow_dispatch:
     inputs:
       cura_conan_version:
         description: 'Cura Conan Version'
-        default: ''
+        default: 'cura/latest@ultimaker/testing'
         type: string
       package_overrides:
         description: 'List of specific packages to be used (space-separated)'
@@ -32,13 +33,21 @@ on:
         required: true
         type: boolean
 
+env:
+  CONAN_LOGIN_USERNAME: ${{ secrets.CONAN_USER }}
+  CONAN_PASSWORD: ${{ secrets.CONAN_PASS }}
+  # Pin versions to avoid conflicts
+  CURA_VERSION: ${{ inputs.cura_conan_version || '5.12.0-alpha.0' }}
+
 jobs:
   linux-installer-arm64:
-    runs-on: ubuntu-24.04-arm  # Use ARM64 runner
+    runs-on: ubuntu-24.04-arm
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
 
       - name: Setup Python
         uses: actions/setup-python@v5
@@ -46,163 +55,307 @@ jobs:
           python-version: '3.12'
           architecture: 'arm64'
 
-      - name: Install system dependencies
+      # ============================================================
+      # STEP 1: Install ONLY essential system build dependencies
+      # DO NOT install Qt system packages - let Conan manage Qt
+      # This prevents system vs Conan Qt version conflicts
+      # ============================================================
+      - name: Install system build dependencies
         run: |
-          sudo apt update
-          sudo DEBIAN_FRONTEND=noninteractive apt install -yq \
-            python3-pip python3-venv python3-dev python3-full pipx \
-            cmake git build-essential ninja-build gettext \
-            qt6-base-dev qt6-declarative-dev libqt6svg6-dev \
-            libgl1-mesa-dev libglu1-mesa-dev pkg-config \
-            libx11-dev libxcb1-dev libxkbcommon-dev \
-            python3-git python3-yaml python3-jinja2 python3-requests \
-            libxcb-cursor-dev libxcb-icccm4-dev libxcb-image0-dev \
-            libxcb-keysyms1-dev libxcb-randr0-dev libxcb-render-util0-dev \
-            libxcb-shape0-dev libxcb-sync-dev libxcb-xfixes0-dev libxcb-xinerama0-dev \
-            libnsl-dev libtirpc-dev
+          sudo apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -yq \
+            build-essential \
+            cmake \
+            ninja-build \
+            git \
+            gettext \
+            pkg-config \
+            autoconf \
+            automake \
+            libtool \
+            libgl1-mesa-dev \
+            libglu1-mesa-dev \
+            libegl1-mesa-dev \
+            libx11-dev \
+            libx11-xcb-dev \
+            libxcb1-dev \
+            libxcb-cursor-dev \
+            libxcb-glx0-dev \
+            libxcb-icccm4-dev \
+            libxcb-image0-dev \
+            libxcb-keysyms1-dev \
+            libxcb-randr0-dev \
+            libxcb-render-util0-dev \
+            libxcb-shape0-dev \
+            libxcb-shm0-dev \
+            libxcb-sync-dev \
+            libxcb-xfixes0-dev \
+            libxcb-xinerama0-dev \
+            libxcb-xkb-dev \
+            libxkbcommon-dev \
+            libxkbcommon-x11-dev \
+            libxrender-dev \
+            libxi-dev \
+            libxrandr-dev \
+            libxcursor-dev \
+            libxinerama-dev \
+            libfontconfig1-dev \
+            libfreetype6-dev \
+            libssl-dev \
+            libnsl-dev \
+            libtirpc-dev \
+            libdbus-1-dev \
+            libatspi2.0-dev \
+            libdrm-dev \
+            libgbm-dev \
+            libinput-dev \
+            libudev-dev \
+            libmtdev-dev \
+            libevdev-dev \
+            libwayland-dev \
+            libwayland-egl1 \
+            patchelf
 
-      - name: Install SIP, PyQt6 and setup qmake
-        run: |
-          python3 -m pip install --break-system-packages "sip>=6,<7"
-          python3 -m pip install --break-system-packages --only-binary :all: PyQt6>=6.8.0
-          sudo ln -sf /usr/bin/qmake6 /usr/bin/qmake || true
-
+      # ============================================================
+      # STEP 2: Setup Conan FIRST with correct profile order
+      # ============================================================
       - name: Install Conan
         run: |
-          pipx install conan==2.7.1
-          echo "$HOME/.local/bin" >> $GITHUB_PATH
+          pip install conan==2.7.1 --break-system-packages
+          echo "Conan version: $(conan --version)"
 
-      - name: Inject Conan dependencies
+      - name: Install Conan dependencies
         run: |
-          pipx inject conan gitpython pyyaml jinja2 requests
+          pip install gitpython pyyaml jinja2 requests --break-system-packages
 
-      - name: Configure Conan
+      # CRITICAL: Install Cura config FIRST, then detect profile
+      # The cura.jinja profile includes(default), so default must exist
+      - name: Configure Conan profiles
         run: |
-          # Order matters: detect default profile first, then install cura config
+          # Step 1: Detect default profile (creates ~/.conan2/profiles/default)
           conan profile detect --force
+          
+          # Step 2: Install Cura config (adds cura.jinja and sets it as default)
           conan config install https://github.com/Ultimaker/conan-config.git
-          # global.conf now sets core:default_profile=cura.jinja (which includes(default))
-          # This provides critical Cura-specific settings like boost/*:header_only=True
-
-      - name: Configure Conan remotes to prevent version conflicts
-        run: |
-          # Remove ConanCenter entirely to prevent version conflicts
-          # All packages should come from cura-conan2 for consistent versions
-          # If this fails, we'll know which packages are missing and can decide strategy
-          echo "Removing ConanCenter to use only cura-conan2"
-          conan remote disable conancenter
-          echo "Active remotes (cura-conan2 only):"
-          conan remote list
-
-      - name: Configure build strategy
-        run: |
-          # Force building ALL packages from source to avoid prebuilt binary dependency conflicts
-          # Prebuilt binaries have baked-in dependencies that cause version conflicts
-          # ARM64 has limited prebuilt binaries anyway, so build from source is standard
-          echo "Will build all packages from source (--build=*) to ensure consistent dependencies"
-
-      - name: Display Conan profile
-        run: |
-          echo "=== Conan Profile (should be cura.jinja) ==="
+          
+          # Step 3: Verify the ARM64 profile is correct
+          echo "=== Default profile contents ==="
+          conan profile show -pr:h default
+          
+          # Step 4: Create ARM64-specific overrides if needed
+          cat >> ~/.conan2/profiles/default << 'EOF'
+          
+          [settings]
+          arch=armv8
+          
+          [options]
+          # Ensure boost is header-only to avoid binary conflicts
+          boost/*:header_only=True
+          # Use system OpenSSL to avoid version conflicts
+          openssl/*:shared=True
+          EOF
+          
+          echo "=== Updated profile ==="
           conan profile show
-          echo "=== Checking for boost header_only option ==="
-          conan profile show | grep -A 1 "boost"
-          echo "=== Conan Remotes ==="
+
+      # ============================================================
+      # STEP 3: Configure remotes with proper priority
+      # Keep ConanCenter as fallback but prioritize cura-conan2
+      # ============================================================
+      - name: Configure Conan remotes
+        run: |
+          # List current remotes
+          echo "=== Current remotes ==="
+          conan remote list
+          
+          # Ensure cura remote has highest priority (index 0)
+          # Don't disable conancenter - some transitive deps need it
+          conan remote update cura-conan2 --index 0 || true
+          
+          # If you have credentials, authenticate
+          if [ -n "$CONAN_LOGIN_USERNAME" ]; then
+            conan remote login cura-conan2 "$CONAN_LOGIN_USERNAME" -p "$CONAN_PASSWORD" || true
+          fi
+          
+          echo "=== Final remote order ==="
           conan remote list
 
+      # ============================================================
+      # STEP 4: Handle package overrides if specified
+      # ============================================================
+      - name: Apply package overrides
+        if: ${{ inputs.package_overrides != '' }}
+        run: |
+          # Create a profile with package version overrides
+          echo "[tool_requires]" >> ~/.conan2/profiles/default
+          for pkg in ${{ inputs.package_overrides }}; do
+            echo "$pkg" >> ~/.conan2/profiles/default
+          done
+          echo "=== Profile with overrides ==="
+          conan profile show
+
+      # ============================================================
+      # STEP 5: Generate lockfile first to resolve all versions
+      # This catches version conflicts BEFORE the long build
+      # ============================================================
+      - name: Generate dependency lockfile
+        run: |
+          echo "Generating lockfile to resolve all dependency versions..."
+          conan lock create . \
+            --lockfile-out=conan.lock \
+            --build=missing \
+            -c tools.system.package_manager:mode=install \
+            -c tools.system.package_manager:sudo=True \
+            ${{ inputs.conan_args }}
+          
+          echo "=== Lockfile generated ==="
+          cat conan.lock | head -100
+
+      # ============================================================
+      # STEP 6: Install dependencies using lockfile
+      # ============================================================
       - name: Install Cura dependencies
         run: |
           conan install . \
-            --build=* \
+            --lockfile=conan.lock \
+            --output-folder=build \
+            --build=missing \
             -c tools.system.package_manager:mode=install \
             -c tools.system.package_manager:sudo=True \
             ${{ inputs.conan_args }}
-        timeout-minutes: 180  # Building everything from source takes longer
+        timeout-minutes: 180
 
+      # ============================================================
+      # STEP 7: Build Cura
+      # ============================================================
       - name: Build Cura
         run: |
-          conan build .
+          cd build
+          source conanbuild.sh
+          cmake .. \
+            -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_TOOLCHAIN_FILE=conan_toolchain.cmake
+          cmake --build . --parallel
+        timeout-minutes: 60
 
+      # ============================================================
+      # STEP 8: Create Conan package
+      # ============================================================
       - name: Create Cura package
         run: |
-          conan create . ${{ inputs.cura_conan_version && format('--version={0}', inputs.cura_conan_version) || '' }} \
-            --build=* \
+          conan create . \
+            --lockfile=conan.lock \
+            --version="${{ env.CURA_VERSION }}" \
+            --build=missing \
             -c tools.system.package_manager:mode=install \
             -c tools.system.package_manager:sudo=True \
-            -o cura:enterprise=${{ inputs.enterprise }} \
-            -o cura:staging=${{ inputs.staging }} \
+            -o cura/*:enterprise=${{ inputs.enterprise || 'False' }} \
+            -o cura/*:staging=${{ inputs.staging || 'False' }} \
             ${{ inputs.conan_args }}
 
-      - name: Install additional dependencies for AppImage
+      # ============================================================
+      # STEP 9: Setup AppImage build
+      # ============================================================
+      - name: Install AppImage dependencies
         run: |
-          sudo DEBIAN_FRONTEND=noninteractive apt install -yq \
-            file libegl1 libgl1 libfontconfig1 libxrender1 \
-            libxi6 libxrandr2 libxcursor1 libxinerama1 libxcb-cursor0
-          python3 -m pip install --break-system-packages pyinstaller jinja2
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -yq \
+            file fuse libfuse2 squashfs-tools zsync desktop-file-utils
+          pip install pyinstaller jinja2 --break-system-packages
 
       - name: Deploy Cura for PyInstaller
         run: |
           mkdir -p appimage_build
           cd appimage_build
-          conan install --requires="cura/${{ inputs.cura_conan_version || '5.12.0-alpha.0' }}" \
-            --deployer-package="*" \
+          
+          # Deploy with the same lockfile for consistency
+          conan install --requires="cura/${{ env.CURA_VERSION }}" \
+            --deployer=full_deploy \
             --deployer-folder=. \
-            --build=* \
+            --build=missing \
             -c tools.system.package_manager:mode=install \
-            -c tools.system.package_manager:sudo=True
+            -c tools.system.package_manager:sudo=True \
+            -g VirtualRunEnv
+          
+          # Source the environment
+          source conanrun.sh
 
       - name: Run PyInstaller
         run: |
           cd appimage_build
-          export PYTHONPATH="${PWD}/venv/lib/python3.12/site-packages:${PYTHONPATH}"
-          pyinstaller UltiMaker-Cura.spec
+          source conanrun.sh
+          
+          # Find and use the spec file
+          SPEC_FILE=$(find . -name "UltiMaker-Cura.spec" | head -1)
+          if [ -z "$SPEC_FILE" ]; then
+            echo "ERROR: Could not find UltiMaker-Cura.spec"
+            find . -name "*.spec" -type f
+            exit 1
+          fi
+          
+          pyinstaller "$SPEC_FILE" --noconfirm
 
       - name: Download appimagetool
         run: |
           cd appimage_build/dist
           wget -q https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-aarch64.AppImage
           chmod +x appimagetool-aarch64.AppImage
+          # Extract because FUSE might not work in CI
+          ./appimagetool-aarch64.AppImage --appimage-extract
+          mv squashfs-root appimagetool-extracted
 
       - name: Create AppImage
         run: |
           cd appimage_build/dist
-          export APPIMAGETOOL_LOCATION=./appimagetool-aarch64.AppImage
+          export APPIMAGETOOL_LOCATION="${PWD}/appimagetool-extracted/AppRun"
+          
+          # Make appimagetool executable
+          chmod +x "${APPIMAGETOOL_LOCATION}"
+          
           python3 ../../packaging/AppImage/create_appimage.py \
             UltiMaker-Cura \
-            "${{ inputs.cura_conan_version || '5.12.0-alpha.0' }}" \
-            "UltiMaker-Cura-${{ inputs.cura_conan_version || '5.12.0-alpha.0' }}-Linux-ARM64.AppImage" || true
+            "${{ env.CURA_VERSION }}" \
+            "UltiMaker-Cura-${{ env.CURA_VERSION }}-Linux-ARM64.AppImage"
 
       - name: Verify AppImage
         run: |
           cd appimage_build/dist
-          if [ -f "UltiMaker-Cura-${{ inputs.cura_conan_version || '5.12.0-alpha.0' }}-Linux-ARM64.AppImage" ]; then
-            ls -lh *.AppImage | grep -v appimagetool
-            echo "AppImage created successfully!"
+          APPIMAGE="UltiMaker-Cura-${{ env.CURA_VERSION }}-Linux-ARM64.AppImage"
+          
+          if [ -f "$APPIMAGE" ]; then
+            ls -lh "$APPIMAGE"
+            file "$APPIMAGE"
+            echo "✅ AppImage created successfully!"
           else
-            echo "Warning: AppImage was not created"
+            echo "❌ AppImage was not created"
+            echo "Available files:"
+            ls -la
             exit 1
           fi
 
-      - name: Upload ARM64 package artifacts
+      # ============================================================
+      # STEP 10: Upload artifacts
+      # ============================================================
+      - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: cura-linux-arm64-package-${{ inputs.cura_conan_version || github.sha }}
+          name: cura-linux-arm64-build-${{ env.CURA_VERSION }}-${{ github.sha }}
           path: |
-            ~/.conan2/p/*/p/
             build/
+            conan.lock
           retention-days: 7
 
       - name: Upload AppImage artifact
         uses: actions/upload-artifact@v4
         with:
-          name: UltiMaker-Cura-${{ inputs.cura_conan_version || github.sha }}-Linux-ARM64-AppImage
-          path: appimage_build/dist/*.AppImage
+          name: UltiMaker-Cura-${{ env.CURA_VERSION }}-Linux-ARM64-AppImage
+          path: appimage_build/dist/UltiMaker-Cura-*.AppImage
           if-no-files-found: error
           retention-days: 30
 
       - name: Upload AppImage to release
         if: startsWith(github.ref, 'refs/tags/')
-        uses: softprops/action-gh-release@v1
+        uses: softprops/action-gh-release@v2
         with:
           files: appimage_build/dist/UltiMaker-Cura-*.AppImage
           draft: false
