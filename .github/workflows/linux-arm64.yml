@@ -88,7 +88,11 @@ jobs:
       - name: Install CuraEngine Conan dependencies
         run: |
           cd ~/cura-build/CuraEngine
-          conan install . --build=missing --update -s compiler.libcxx=libstdc++11
+          # Patch conanfile.py to remove private sentrylibrary dependency
+          sed -i "s/python_requires = \"sentrylibrary\/1.0.0\"/# python_requires = \"sentrylibrary\/1.0.0\"/" conanfile.py
+          # Also disable Sentry in conanfile.py
+          sed -i 's/options\["sentry"\].*=.*/options["sentry"] = [False, "Use Sentry crash reporting"]/' conanfile.py || true
+          conan install . --build=missing --update -s compiler.libcxx=libstdc++11 -o sentry=False
 
       - name: Patch CuraEngine CMakeLists.txt
         run: |
