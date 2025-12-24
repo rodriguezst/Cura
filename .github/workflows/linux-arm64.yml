@@ -232,9 +232,6 @@ jobs:
           # Set CONAN_LOGIN_USERNAME to skip any interactive prompts
           export CONAN_LOGIN_USERNAME=""
 
-          # Verify cura-arm64 profile exists
-          conan profile show cura-arm64 || (echo "ERROR: cura-arm64 profile not found!" && exit 1)
-
           # Use the wrapper script that patches AutoPackager and retries on failure
           /tmp/conan-install-wrapper.sh \
             --build=missing \
