@@ -124,7 +124,7 @@ jobs:
           EOF
 
           echo "===== Created cura-arm64 profile ====="
-          conan profile show cura-arm64
+          conan profile show
           echo "===== Available profiles ====="
           conan profile list
           echo "===================================="
