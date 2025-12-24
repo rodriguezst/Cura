@@ -90,6 +90,7 @@ jobs:
           fi
           echo "boost/*: boost/1.86.0" >> "$PROFILE_PATH"
           echo "spdlog/*: spdlog/1.15.1" >> "$PROFILE_PATH"
+          echo "fmt/*: fmt/11.1.3" >> "$PROFILE_PATH"
 
       - name: Display Conan profile
         run: |
