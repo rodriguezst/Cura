@@ -67,9 +67,10 @@ jobs:
             automake \
             libtool
 
-      - name: Install Conan
+      - name: Install Conan and Python dependencies
         run: |
           pip3 install --break-system-packages "conan>=2.7.0,<3.0.0"
+          # Cura's conanfile.py requires gitpython for Git()
           pip3 install --break-system-packages gitpython
 
       - name: Configure Conan profile for ARM64
@@ -78,6 +79,7 @@ jobs:
           conan profile detect --force
 
           # Create a cura-arm64 profile that extends default with cura-specific settings
+          mkdir -p ~/.conan2/profiles
           cat > ~/.conan2/profiles/cura-arm64 << 'EOF'
           include(default)
 
@@ -121,69 +123,100 @@ jobs:
           clipper/*:shared=True
           EOF
 
-          echo "Created cura-arm64 profile"
-          conan profile show
+          echo "===== Created cura-arm64 profile ====="
+          conan profile show cura-arm64
+          echo "===== Available profiles ====="
+          conan profile list
+          echo "===================================="
 
       - name: Fix Conan 2.0 compatibility issues in cached recipes
         run: |
-          # This script patches AutoPackager usage in conan recipes that are not yet Conan 2.0 compatible
-          # The patches are applied to the conan cache after recipes are downloaded
+          # Create a wrapper script that patches AutoPackager and retries on failure
+          cat > /tmp/conan-install-wrapper.sh << 'WRAPPER_EOF'
+          #!/bin/bash
 
-          mkdir -p ~/.conan2/extensions/commands
-          cat > ~/.conan2/extensions/commands/patch_autopackager.py << 'EOF'
-          from conan.api.conan_api import ConanAPI
-          from conan.cli.command import conan_command
-          import os
-          import re
+          patch_autopackager() {
+              echo "Patching AutoPackager usage in conan cache..."
+              find ~/.conan2/p -name "conanfile.py" -type f 2>/dev/null | while read filepath; do
+                  if grep -q "AutoPackager" "$filepath" 2>/dev/null; then
+                      echo "Patching: $filepath"
+                      python3 << 'PYEOF'
+          import sys
+          try:
+              filepath = sys.argv[1]
+              with open(filepath, 'r') as f:
+                  content = f.read()
 
-          def patch_autopackager_in_cache(conan_api: ConanAPI):
-              """Patch AutoPackager usage in conan cache recipes"""
-              import glob
-              import logging
+              # Replace AutoPackager imports
+              content = content.replace(
+                  'from conan.tools.files import copy, AutoPackager, update_conandata',
+                  'from conan.tools.files import copy, update_conandata'
+              )
+              content = content.replace(
+                  'from conan.tools.files import copy, save, load, AutoPackager',
+                  'from conan.tools.files import copy, save, load'
+              )
+              content = content.replace(
+                  'from conan.tools.files import AutoPackager',
+                  'from conan.tools.files import copy'
+              )
 
-              logger = logging.getLogger(__name__)
-              cache_path = os.path.expanduser("~/.conan2/p")
-
-              # Find all conanfile.py files in cache
-              for filepath in glob.glob(os.path.join(cache_path, "*", "*", "e", "conanfile.py"), recursive=True):
-                  try:
-                      with open(filepath, 'r') as f:
-                          content = f.read()
-
-                      # Check if file uses AutoPackager
-                      if 'AutoPackager' in content:
-                          logger.info(f"Patching AutoPackager in {filepath}")
-
-                          # Replace AutoPackager import and usage
-                          content = content.replace(
-                              'from conan.tools.files import copy, save, load, AutoPackager',
-                              'from conan.tools.files import copy, save, load'
-                          )
-
-                          # Replace AutoPackager(self).run() with explicit copy calls
-                          if 'AutoPackager(self).run()' in content:
-                              replacement = '''copy(self, pattern="*.h", dst=os.path.join(self.package_folder, "include"), keep_path=False)
+              # Replace AutoPackager(self).run() with explicit copy calls
+              if 'AutoPackager(self).run()' in content:
+                  replacement = '''copy(self, pattern="*.h", dst=os.path.join(self.package_folder, "include"), keep_path=False)
           copy(self, pattern="*.a", dst=os.path.join(self.package_folder, "lib"), keep_path=False)
           copy(self, pattern="*.lib", dst=os.path.join(self.package_folder, "lib"), keep_path=False)
           copy(self, pattern="*.so*", dst=os.path.join(self.package_folder, "lib"), keep_path=False)
           copy(self, pattern="*.dylib", dst=os.path.join(self.package_folder, "lib"), keep_path=False)
           copy(self, pattern="*.dll", dst=os.path.join(self.package_folder, "bin"), keep_path=False)'''
-                              content = content.replace('AutoPackager(self).run()', replacement)
+                  content = content.replace('AutoPackager(self).run()', replacement)
 
-                          with open(filepath, 'w') as f:
-                              f.write(content)
-                          logger.info(f"Patched {filepath}")
-                  except Exception as e:
-                      logger.warning(f"Failed to patch {filepath}: {e}")
+              with open(filepath, 'w') as f:
+                  f.write(content)
+          except Exception as e:
+              print(f"Error: {e}", file=sys.stderr)
+          PYEOF
+                      "$filepath"
+                  fi
+              done
+              echo "AutoPackager patching complete"
+          }
 
-              logger.info("AutoPackager patching complete")
+          # Retry loop for conan install
+          MAX_RETRIES=5
+          RETRY_COUNT=0
 
-          @conan_command(group="Custom commands")
-          def patch_autopackager(*args, **kwargs):
-              """Patch AutoPackager usage in conan cache for Conan 2.0 compatibility"""
-              conan_api = ConanAPI()
-              patch_autopackager_in_cache(conan_api)
-          EOF
+          while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
+              RETRY_COUNT=$((RETRY_COUNT + 1))
+              echo "Conan install attempt $RETRY_COUNT/$MAX_RETRIES..."
+
+              # Run conan install and capture output
+              conan install "$@" 2>&1 | tee /tmp/conan-output.log
+              EXIT_CODE=${PIPESTATUS[0]}
+
+              if [ $EXIT_CODE -eq 0 ]; then
+                  echo "Conan install succeeded!"
+                  exit 0
+              fi
+
+              # Check if the error is related to AutoPackager
+              if grep -q "AutoPackager" /tmp/conan-output.log; then
+                  echo "AutoPackager error detected, patching recipes and retrying..."
+                  patch_autopackager
+                  sleep 1
+              else
+                  echo "Conan install failed with non-AutoPackager error:"
+                  cat /tmp/conan-output.log
+                  exit $EXIT_CODE
+              fi
+          done
+
+          echo "Max retries reached, giving up"
+          exit 1
+          WRAPPER_EOF
+
+          chmod +x /tmp/conan-install-wrapper.sh
+          echo "Created conan-install-wrapper.sh"
 
       - name: Create libnsl symlink for ARM64
         run: |
@@ -199,8 +232,11 @@ jobs:
           # Set CONAN_LOGIN_USERNAME to skip any interactive prompts
           export CONAN_LOGIN_USERNAME=""
 
-          # Run conan install with cura-arm64 profile
-          conan install . \
+          # Verify cura-arm64 profile exists
+          conan profile show cura-arm64 || (echo "ERROR: cura-arm64 profile not found!" && exit 1)
+
+          # Use the wrapper script that patches AutoPackager and retries on failure
+          /tmp/conan-install-wrapper.sh \
             --build=missing \
             --update \
             -o cura/*:devtools=True \
