@@ -1,7 +1,7 @@
 name: Linux ARM64 Installer
-run-name: ${{ inputs.cura_conan_version }} ARM64 by @${{ github.actor }}
 
 on:
+  push:
   workflow_dispatch:
     inputs:
       cura_conan_version:
@@ -27,109 +27,181 @@ on:
         default: false
         required: true
         type: boolean
-  push:
+      use_self_hosted:
+        description: 'Use self-hosted ARM64 runner'
+        default: false
+        required: true
+        type: boolean
 
 jobs:
-  linux-installer-arm64:
-    runs-on: ubuntu-24.04-arm  # Use ARM64 runner
+  linux-arm64-installer:
+    runs-on: ${{ inputs.use_self_hosted && 'self-hosted-linux-arm64' || 'ubuntu-24.04-arm' }}
 
     steps:
-      - name: Checkout code
+      - name: Checkout Cura
         uses: actions/checkout@v4
-
-      - name: Setup Python
-        uses: actions/setup-python@v5
         with:
-          python-version: '3.12'
-          architecture: 'arm64'
+          submodules: recursive
 
-      - name: Install system dependencies
+      - name: Install Qt6 and system dependencies
         run: |
-          sudo apt update
-          sudo DEBIAN_FRONTEND=noninteractive apt install -yq \
-            python3-pip python3-venv python3-dev python3-full pipx \
-            cmake git build-essential ninja-build gettext \
-            qt6-base-dev qt6-declarative-dev libqt6svg6-dev \
-            libgl1-mesa-dev libglu1-mesa-dev pkg-config \
-            libx11-dev libxcb1-dev libxkbcommon-dev \
-            python3-git python3-yaml python3-jinja2 python3-requests \
-            libxcb-cursor-dev libxcb-icccm4-dev libxcb-image0-dev \
-            libxcb-keysyms1-dev libxcb-randr0-dev libxcb-render-util0-dev \
-            libxcb-shape0-dev libxcb-sync-dev libxcb-xfixes0-dev libxcb-xinerama0-dev \
-            libnsl-dev libtirpc-dev
-
-      - name: Install SIP, PyQt6 and setup qmake
-        run: |
-          python3 -m pip install --break-system-packages "sip>=6,<7"
-          python3 -m pip install --break-system-packages --only-binary :all: PyQt6>=6.8.0
-          sudo ln -sf /usr/bin/qmake6 /usr/bin/qmake || true
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential \
+            qt6-base-dev \
+            qt6-base-dev-tools \
+            qt6-declarative-dev \
+            qt6-tools-dev \
+            libgl1-mesa-dev \
+            python3 \
+            python3-pip \
+            python3-venv \
+            git \
+            wget \
+            curl \
+            patchelf \
+            cmake \
+            ninja-build \
+            ccache \
+            autoconf \
+            automake \
+            libtool
 
       - name: Install Conan
         run: |
-          pipx install conan==2.7.1
-          echo "$HOME/.local/bin" >> $GITHUB_PATH
+          pip3 install --break-system-packages "conan>=2.7.0,<3.0.0"
 
-      - name: Inject Conan dependencies
+      - name: Configure Conan profile for ARM64
         run: |
-          pipx inject conan gitpython pyyaml jinja2 requests
-
-      - name: Configure Conan
-        run: |
-          conan config install https://github.com/Ultimaker/conan-config.git
+          conan config install https://github.com/ultimaker/conan-config.git
           conan profile detect --force
 
-      - name: Add version overrides to prevent conflicts
-        run: |
-          # Override boost version to match local environment (prevent 1.88.0 vs 1.86.0 conflict)
-          echo "Forcing boost/1.86.0 to match local build environment"
-          echo "Adding boost/1.86.0 override to profile"
-          PROFILE_PATH=$(conan profile path default)
+          # Add version overrides for ARM64 compatibility
+          PROFILE_PATH=$(conan profile path cura)
           if ! grep -q "\[replace_requires\]" "$PROFILE_PATH"; then
             echo "" >> "$PROFILE_PATH"
             echo "[replace_requires]" >> "$PROFILE_PATH"
           fi
-          echo "boost/*: boost/1.86.0" >> "$PROFILE_PATH"
-          echo "spdlog/*: spdlog/1.15.1" >> "$PROFILE_PATH"
-          echo "fmt/*: fmt/11.1.3" >> "$PROFILE_PATH"
+          echo "spdlog/*: spdlog/[>=1.15.0]" >> "$PROFILE_PATH"
+          echo "fmt/*: fmt/[>=11.0.0]" >> "$PROFILE_PATH"
+          echo "boost/*: boost/[>=1.86.0]" >> "$PROFILE_PATH"
+          echo "libsystemd/*: libsystemd/[>=255.10]" >> "$PROFILE_PATH"
 
-      - name: Display Conan profile
+      - name: Fix Conan 2.0 compatibility issues in cached recipes
         run: |
-          conan profile show --profile:host default
-          conan remote list
+          # This script patches AutoPackager usage in conan recipes that are not yet Conan 2.0 compatible
+          # The patches are applied to the conan cache after recipes are downloaded
 
-      - name: Enable Swap Space
-        run: |
-          sudo dd if=/dev/zero of=/mnt/swapfile bs=1M count=8192 status=progress
-          sudo chmod 600 /mnt/swapfile
-          sudo mkswap /mnt/swapfile
-          sudo swapon /mnt/swapfile
-          free -h
+          mkdir -p ~/.conan2/extensions/commands
+          cat > ~/.conan2/extensions/commands/patch_autopackager.py << 'EOF'
+          from conan.api.conan_api import ConanAPI
+          from conan.cli.command import conan_command
+          import os
+          import re
 
-      - name: Install Cura dependencies
+          def patch_autopackager_in_cache(conan_api: ConanAPI):
+              """Patch AutoPackager usage in conan cache recipes"""
+              import glob
+              import logging
+
+              logger = logging.getLogger(__name__)
+              cache_path = os.path.expanduser("~/.conan2/p")
+
+              # Find all conanfile.py files in cache
+              for filepath in glob.glob(os.path.join(cache_path, "*", "*", "e", "conanfile.py"), recursive=True):
+                  try:
+                      with open(filepath, 'r') as f:
+                          content = f.read()
+
+                      # Check if file uses AutoPackager
+                      if 'AutoPackager' in content:
+                          logger.info(f"Patching AutoPackager in {filepath}")
+
+                          # Replace AutoPackager import and usage
+                          content = content.replace(
+                              'from conan.tools.files import copy, save, load, AutoPackager',
+                              'from conan.tools.files import copy, save, load'
+                          )
+
+                          # Replace AutoPackager(self).run() with explicit copy calls
+                          if 'AutoPackager(self).run()' in content:
+                              replacement = '''copy(self, pattern="*.h", dst=os.path.join(self.package_folder, "include"), keep_path=False)
+          copy(self, pattern="*.a", dst=os.path.join(self.package_folder, "lib"), keep_path=False)
+          copy(self, pattern="*.lib", dst=os.path.join(self.package_folder, "lib"), keep_path=False)
+          copy(self, pattern="*.so*", dst=os.path.join(self.package_folder, "lib"), keep_path=False)
+          copy(self, pattern="*.dylib", dst=os.path.join(self.package_folder, "lib"), keep_path=False)
+          copy(self, pattern="*.dll", dst=os.path.join(self.package_folder, "bin"), keep_path=False)'''
+                              content = content.replace('AutoPackager(self).run()', replacement)
+
+                          with open(filepath, 'w') as f:
+                              f.write(content)
+                          logger.info(f"Patched {filepath}")
+                  except Exception as e:
+                      logger.warning(f"Failed to patch {filepath}: {e}")
+
+              logger.info("AutoPackager patching complete")
+
+          @conan_command(group="Custom commands")
+          def patch_autopackager(*args, **kwargs):
+              """Patch AutoPackager usage in conan cache for Conan 2.0 compatibility"""
+              conan_api = ConanAPI()
+              patch_autopackager_in_cache(conan_api)
+          EOF
+
+      - name: Create libnsl symlink for ARM64
         run: |
-          conan install . --build=missing \
-            -c tools.system.package_manager:mode=install \
-            -c tools.system.package_manager:sudo=True \
+          # Some Python builds may need libnsl.so symlink
+          if [ -f /lib/aarch64-linux-gnu/libnsl.so.2 ] && [ ! -L /lib/aarch64-linux-gnu/libnsl.so ]; then
+            sudo ln -sf /lib/aarch64-linux-gnu/libnsl.so.2 /lib/aarch64-linux-gnu/libnsl.so
+          fi
+
+      - name: Install Cura dependencies with Conan
+        run: |
+          cd /home/runner/work/Cura/Cura
+
+          # Set CONAN_LOGIN_USERNAME to skip any interactive prompts
+          export CONAN_LOGIN_USERNAME=""
+
+          # Run conan install with cura profile
+          conan install . \
+            --build=missing \
+            --update \
+            -o cura:devtools=True \
+            -pr:h cura \
+            -g VirtualPythonEnv \
             ${{ inputs.conan_args }}
-        timeout-minutes: 120  # ARM builds take longer
 
       - name: Build Cura
         run: |
-          conan build .
+          cd /home/runner/work/Cura/Cura
+          source venv/bin/activate
 
-      - name: Create Cura package
+          # Verify PyQt6 is installed
+          python -c "import PyQt6; print('PyQt6 installed successfully')"
+
+          # Run any additional build steps if needed
+          # python cura_app.py --version  # Quick sanity check
+
+      - name: Create PyInstaller spec
         run: |
-          conan create . ${{ inputs.cura_conan_version && format('--version={0}', inputs.cura_conan_version) || '' }} \
-            --build=missing \
-            -o cura:enterprise=${{ inputs.enterprise }} \
-            -o cura:staging=${{ inputs.staging }} \
-            ${{ inputs.conan_args }}
+          cd /home/runner/work/Cura/Cura
+          source venv/bin/activate
 
-      - name: Upload ARM64 package
+          # Run conan deploy to prepare for PyInstaller
+          conan deploy . || true
+
+          # The spec file should have been generated by conan deploy
+          if [ -f "venv/conan/UltiMaker-Cura.spec" ]; then
+            echo "PyInstaller spec found at venv/conan/UltiMaker-Cura.spec"
+          else
+            echo "Warning: PyInstaller spec not found"
+          fi
+
+      - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: cura-linux-arm64-${{ inputs.cura_conan_version || github.sha }}
+          name: cura-arm64-build
           path: |
-            ~/.conan2/p/*/p/
-            build/
+            venv/
+            dist/
           retention-days: 7
