@@ -70,6 +70,7 @@ jobs:
       - name: Install Conan
         run: |
           pip3 install --break-system-packages "conan>=2.7.0,<3.0.0"
+          pip3 install --break-system-packages gitpython
 
       - name: Configure Conan profile for ARM64
         run: |
