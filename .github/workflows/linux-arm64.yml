@@ -1,6 +1,7 @@
 name: Linux ARM64 Installer
 
 on:
+  push:
   workflow_dispatch:
     inputs:
       cura_conan_version:
@@ -28,13 +29,13 @@ on:
         type: boolean
       use_self_hosted:
         description: 'Use self-hosted ARM64 runner'
-        default: true
+        default: false
         required: true
         type: boolean
 
 jobs:
   linux-arm64-installer:
-    runs-on: ${{ inputs.use_self_hosted && 'self-hosted-linux-arm64' || 'ubuntu-24.04-arm64' }}
+    runs-on: ${{ inputs.use_self_hosted && 'self-hosted-linux-arm' || 'ubuntu-24.04-arm' }}
 
     steps:
       - name: Checkout Cura
