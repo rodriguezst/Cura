@@ -202,7 +202,7 @@ jobs:
           conan install . \
             --build=missing \
             --update \
-            -o cura:devtools=True \
+            -o cura/*:devtools=True \
             -pr:h cura-arm64 \
             -pr:b default \
             -g VirtualPythonEnv \
