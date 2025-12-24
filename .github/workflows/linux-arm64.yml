@@ -78,6 +78,18 @@ jobs:
           conan config install https://github.com/Ultimaker/conan-config.git
           conan profile detect --force
 
+      - name: Add version overrides to prevent conflicts
+        run: |
+          # Override boost version to match local environment (prevent 1.88.0 vs 1.86.0 conflict)
+          echo "Forcing boost/1.86.0 to match local build environment"
+          echo "Adding boost/1.86.0 override to profile"
+          PROFILE_PATH=$(conan profile path default)
+          if ! grep -q "\[replace_requires\]" "$PROFILE_PATH"; then
+            echo "" >> "$PROFILE_PATH"
+            echo "[replace_requires]" >> "$PROFILE_PATH"
+          fi
+          echo "boost/*: boost/1.86.0" >> "$PROFILE_PATH"
+
       - name: Display Conan profile
         run: |
           conan profile show --profile:host default
