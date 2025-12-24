@@ -97,6 +97,14 @@ jobs:
           conan profile show --profile:host default
           conan remote list
 
+      - name: Enable Swap Space
+        run: |
+          sudo fallocate -l 8G /swapfile
+          sudo chmod 600 /swapfile
+          sudo mkswap /swapfile
+          sudo swapon /swapfile
+          free -h
+
       - name: Install Cura dependencies
         run: |
           conan install . --build=missing \
