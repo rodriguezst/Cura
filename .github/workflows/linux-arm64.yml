@@ -1,7 +1,6 @@
 name: Linux ARM64 Installer
 
 on:
-  push:
   workflow_dispatch:
     inputs:
       cura_conan_version:
@@ -29,13 +28,13 @@ on:
         type: boolean
       use_self_hosted:
         description: 'Use self-hosted ARM64 runner'
-        default: false
+        default: true
         required: true
         type: boolean
 
 jobs:
   linux-arm64-installer:
-    runs-on: ${{ inputs.use_self_hosted && 'self-hosted-linux-arm64' || 'ubuntu-24.04-arm' }}
+    runs-on: ${{ inputs.use_self_hosted && 'self-hosted-linux-arm64' || 'ubuntu-24.04-arm64' }}
 
     steps:
       - name: Checkout Cura
@@ -140,50 +139,34 @@ jobs:
               find ~/.conan2/p -name "conanfile.py" -type f 2>/dev/null | while read filepath; do
                   if grep -q "AutoPackager" "$filepath" 2>/dev/null; then
                       echo "Patching: $filepath"
-                      python3 << 'PYEOF'
-          import sys
-          try:
-              filepath = sys.argv[1]
-              with open(filepath, 'r') as f:
-                  content = f.read()
-
-              # Replace AutoPackager imports
-              content = content.replace(
-                  'from conan.tools.files import copy, AutoPackager, update_conandata',
-                  'from conan.tools.files import copy, update_conandata'
-              )
-              content = content.replace(
-                  'from conan.tools.files import copy, save, load, AutoPackager',
-                  'from conan.tools.files import copy, save, load'
-              )
-              content = content.replace(
-                  'from conan.tools.files import AutoPackager',
-                  'from conan.tools.files import copy'
-              )
-
-              # Replace AutoPackager(self).run() with explicit copy calls
-              if 'AutoPackager(self).run()' in content:
-                  replacement = '''copy(self, pattern="*.h", dst=os.path.join(self.package_folder, "include"), keep_path=False)
-          copy(self, pattern="*.a", dst=os.path.join(self.package_folder, "lib"), keep_path=False)
-          copy(self, pattern="*.lib", dst=os.path.join(self.package_folder, "lib"), keep_path=False)
-          copy(self, pattern="*.so*", dst=os.path.join(self.package_folder, "lib"), keep_path=False)
-          copy(self, pattern="*.dylib", dst=os.path.join(self.package_folder, "lib"), keep_path=False)
-          copy(self, pattern="*.dll", dst=os.path.join(self.package_folder, "bin"), keep_path=False)'''
-                  content = content.replace('AutoPackager(self).run()', replacement)
-
-              with open(filepath, 'w') as f:
-                  f.write(content)
-          except Exception as e:
-              print(f"Error: {e}", file=sys.stderr)
-          PYEOF
-                      "$filepath"
+                      # Make sure file is writable
+                      chmod +w "$filepath" 2>/dev/null || true
+                      # Use sed for simple text replacement (more reliable than Python heredoc)
+                      sed -i 's/from conan\.tools\.files import copy, AutoPackager, update_conandata/from conan.tools.files import copy, update_conandata/g' "$filepath"
+                      sed -i 's/from conan\.tools\.files import copy, save, load, AutoPackager/from conan.tools.files import copy, save, load/g' "$filepath"
+                      sed -i 's/from conan\.tools\.files import AutoPackager/from conan.tools.files import copy/g' "$filepath"
+                      # Replace AutoPackager(self).run() with explicit copy calls
+                      if grep -q "AutoPackager(self).run()" "$filepath"; then
+                          sed -i '/AutoPackager(self)\.run()/r /tmp/autopackager_replacement.txt' "$filepath"
+                          sed -i '/AutoPackager(self)\.run()/d' "$filepath"
+                      fi
                   fi
               done
               echo "AutoPackager patching complete"
           }
 
+          # Create the replacement text for AutoPackager(self).run()
+          cat > /tmp/autopackager_replacement.txt << 'EOF'
+copy(self, pattern="*.h", dst=os.path.join(self.package_folder, "include"), keep_path=False)
+copy(self, pattern="*.a", dst=os.path.join(self.package_folder, "lib"), keep_path=False)
+copy(self, pattern="*.lib", dst=os.path.join(self.package_folder, "lib"), keep_path=False)
+copy(self, pattern="*.so*", dst=os.path.join(self.package_folder, "lib"), keep_path=False)
+copy(self, pattern="*.dylib", dst=os.path.join(self.package_folder, "lib"), keep_path=False)
+copy(self, pattern="*.dll", dst=os.path.join(self.package_folder, "bin"), keep_path=False)
+EOF
+
           # Retry loop for conan install
-          MAX_RETRIES=5
+          MAX_RETRIES=10
           RETRY_COUNT=0
 
           while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
@@ -206,12 +189,13 @@ jobs:
                   sleep 1
               else
                   echo "Conan install failed with non-AutoPackager error:"
-                  cat /tmp/conan-output.log
+                  tail -100 /tmp/conan-output.log
                   exit $EXIT_CODE
               fi
           done
 
           echo "Max retries reached, giving up"
+          tail -100 /tmp/conan-output.log
           exit 1
           WRAPPER_EOF
 
