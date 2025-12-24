@@ -121,7 +121,7 @@ jobs:
           EOF
 
           echo "Created cura-arm64 profile"
-          conan profile show cura-arm64
+          conan profile show
 
       - name: Fix Conan 2.0 compatibility issues in cached recipes
         run: |
