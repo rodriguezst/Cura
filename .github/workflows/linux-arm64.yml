@@ -68,7 +68,7 @@ jobs:
             libassimp-dev libstb-dev librange-v3-dev lib3mf-dev libdocopt-dev \
             libtbb-dev libgrpc++-dev libssl-dev libboost-all-dev libgmp-dev \
             libmpfr-dev libopenexr-dev libdbus-1-dev pybind11-dev catch2 gettext \
-            python3-numpy python3-scipy python3-shapely python3-pyclipper \
+            python3-git python3-numpy python3-scipy python3-shapely python3-pyclipper \
             python3-opengl python3-zeroconf python3-keyring python3-requests \
             python3-cryptography python3-serial python3-yaml python3-packaging \
             python3-pyqt6 python3-pyqt6.qtquick \
