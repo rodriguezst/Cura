@@ -71,7 +71,7 @@ jobs:
             python3-numpy python3-scipy python3-shapely python3-pyclipper \
             python3-opengl python3-zeroconf python3-keyring python3-requests \
             python3-cryptography python3-serial python3-yaml python3-packaging \
-            python3-pyqt6 python3-pyqt6.qtquick python3-pyqt6.qtopengl \
+            python3-pyqt6 python3-pyqt6.qtquick \
             libnsl-dev libtirpc-dev
 
       - name: Setup Python virtual environment
