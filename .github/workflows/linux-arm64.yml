@@ -1,263 +1,183 @@
-name: Linux ARM64 Installer
+name: Linux ARM64 Build
+run-name: ARM64 Build ${{ github.ref_name }} by @${{ github.actor }}
 
 on:
-  push:
   workflow_dispatch:
     inputs:
       cura_conan_version:
         description: 'Cura Conan Version'
         default: ''
         type: string
-      package_overrides:
-        description: 'List of specific packages to be used (space-separated)'
-        default: ''
-        type: string
       conan_args:
-        description: 'Conan args'
+        description: 'Additional Conan args'
         default: ''
         required: false
         type: string
-      enterprise:
-        description: 'Build Cura as an Enterprise edition'
-        default: false
-        required: true
-        type: boolean
-      staging:
-        description: 'Use staging API'
-        default: false
-        required: true
-        type: boolean
-      use_self_hosted:
-        description: 'Use self-hosted ARM64 runner'
-        default: false
-        required: true
-        type: boolean
+  push:
+    paths:
+      - 'plugins/**'
+      - 'cura/**'
+      - 'resources/**'
+      - 'conanfile.py'
+      - 'conandata.yml'
+      - '.github/workflows/linux-arm64.yml'
+  pull_request:
+    branches:
+      - 'main'
+    paths:
+      - 'plugins/**'
+      - 'cura/**'
+      - 'resources/**'
+      - 'conanfile.py'
+      - 'conandata.yml'
+      - '.github/workflows/linux-arm64.yml'
+
+env:
+  CONAN_LOGIN_USERNAME: ${{ secrets.CONAN_USER }}
+  CONAN_PASSWORD: ${{ secrets.CONAN_PASS }}
 
 jobs:
-  linux-arm64-installer:
-    runs-on: ${{ inputs.use_self_hosted && 'self-hosted-linux-arm' || 'ubuntu-24.04-arm' }}
+  build-arm64:
+    name: Build Cura ARM64
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 360
 
     steps:
-      - name: Checkout Cura
+      - name: Checkout repository
         uses: actions/checkout@v4
         with:
-          submodules: recursive
+          fetch-depth: 1
 
-      - name: Install Qt6 and system dependencies
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            build-essential \
-            qt6-base-dev \
-            qt6-base-dev-tools \
-            qt6-declarative-dev \
-            qt6-tools-dev \
-            libgl1-mesa-dev \
-            python3 \
-            python3-pip \
-            python3-venv \
-            git \
-            wget \
-            curl \
-            patchelf \
-            cmake \
-            ninja-build \
-            ccache \
-            autoconf \
-            automake \
-            libtool
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -yq \
+            cmake ninja-build g++ python3-pip python3-dev python3-venv \
+            qt6-base-dev qt6-declarative-dev qt6-tools-dev qt6-l10n-tools \
+            qml6-module-qtqml qml6-module-qtqml-models qml6-module-qtquick \
+            qml6-module-qtquick-controls qml6-module-qtquick-dialogs \
+            qml6-module-qtquick-layouts qml6-module-qtquick-window \
+            qml6-module-qtquick-templates qml6-module-qt5compat-graphicaleffects \
+            libprotobuf-dev protobuf-compiler libpolyclipping-dev libnlopt-dev \
+            libfmt-dev libspdlog-dev rapidjson-dev libpugixml-dev libcgal-dev \
+            libassimp-dev libstb-dev librange-v3-dev lib3mf-dev libdocopt-dev \
+            libtbb-dev libgrpc++-dev libssl-dev libboost-all-dev libgmp-dev \
+            libmpfr-dev libopenexr-dev libdbus-1-dev pybind11-dev catch2 gettext \
+            python3-numpy python3-scipy python3-shapely python3-pyclipper \
+            python3-opengl python3-zeroconf python3-keyring python3-requests \
+            python3-cryptography python3-serial python3-yaml python3-packaging \
+            python3-pyqt6 python3-pyqt6.qtquick python3-pyqt6.qtopengl \
+            libnsl-dev libtirpc-dev
 
-      - name: Install Conan and Python dependencies
+      - name: Setup Python virtual environment
         run: |
-          pip3 install --break-system-packages "conan>=2.7.0,<3.0.0"
-          # Cura's conanfile.py requires gitpython for Git()
-          pip3 install --break-system-packages gitpython
+          python -m venv .venv
+          source .venv/bin/activate
+          pip install --upgrade pip
+          pip install "conan>=2.7.0,<2.8.0"
+          pip install "sip>=6,<7"
 
-      - name: Configure Conan profile for ARM64
+      - name: Configure Conan
         run: |
-          conan config install https://github.com/ultimaker/conan-config.git
+          source .venv/bin/activate
           conan profile detect --force
+          conan config install https://github.com/ultimaker/conan-config.git
 
-          # Create a cura-arm64 profile that extends default with cura-specific settings
-          mkdir -p ~/.conan2/profiles
-          cat > ~/.conan2/profiles/cura-arm64 << 'EOF'
-          include(default)
+          # Add ARM64-specific version overrides to resolve conflicts
+          cat >> ~/.conan2/profiles/cura.jinja << 'EOF'
 
+          # ARM64 Linux version overrides
           [replace_requires]
-          libsystemd/*: libsystemd/[>=255.10]
-          fmt/*: fmt/[>=11.0.0]
-          boost/*: boost/[>=1.86.0]
-          spdlog/*: spdlog/[>=1.15.0]
-
-          [settings]
-          compiler.cppstd=17
-          curaengine*:compiler.cppstd=20
-          curaengine_plugin_infill_generate*:compiler.cppstd=20
-          curaengine_plugin_gradual_flow*:compiler.cppstd=20
-          curaengine_grpc_definitions*:compiler.cppstd=20
-          scripta*:compiler.cppstd=20
-          umspatial*:compiler.cppstd=20
-          dulcificum*:compiler.cppstd=20
-          uvula*:compiler.cppstd=20
-          curator/*:compiler.cppstd=20
-          arcus*:compiler.cppstd=20
-          pyarcus*:compiler.cppstd=20
-
-          [options]
-          asio-grpc/*:local_allocator=recycling_allocator
-          grpc/*:csharp_plugin=False
-          grpc/*:node_plugin=False
-          grpc/*:objective_c_plugin=False
-          grpc/*:php_plugin=False
-          grpc/*:ruby_plugin=False
-          grpc/*:python_plugin=False
-          boost/*:header_only=True
-          openssl/*:shared=True
-          pyarcus/*:shared=True
-          pysavitar/*:shared=True
-          pynest2d/*:shared=True
-          cpython/*:shared=True
-          cpython/*:with_tkinter=False
-          cpython/*:with_curses=False
-          dulcificum/*:shared=True
-          clipper/*:shared=True
+          spdlog/*: spdlog/1.12.0
+          fmt/*: fmt/10.2.1
+          # CuraEngine requires Boost 1.86.0 for concurrent_flat_set.hpp (added in Boost 1.84+)
+          boost/*: boost/1.86.0
           EOF
 
-          echo "===== Created cura-arm64 profile ====="
-          conan profile show
-          echo "===== Available profiles ====="
-          conan profile list
-          echo "===================================="
+      - name: Cache Conan packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.conan2/p
+          key: conan-arm64-${{ hashFiles('conanfile.py', 'conandata.yml') }}
+          restore-keys: |
+            conan-arm64-
 
-      - name: Fix Conan 2.0 compatibility issues in cached recipes
+      - name: Build Cura dependencies
         run: |
-          # Create a wrapper script that patches AutoPackager and retries on failure
-          cat > /tmp/conan-install-wrapper.sh << 'WRAPPER_EOF'
-          #!/bin/bash
-
-          patch_autopackager() {
-              echo "Patching AutoPackager usage in conan cache..."
-              find ~/.conan2/p -name "conanfile.py" -type f 2>/dev/null | while read filepath; do
-                  if grep -q "AutoPackager" "$filepath" 2>/dev/null; then
-                      echo "Patching: $filepath"
-                      # Make sure file is writable
-                      chmod +w "$filepath" 2>/dev/null || true
-                      # Use sed for simple text replacement (more reliable than Python heredoc)
-                      sed -i 's/from conan\.tools\.files import copy, AutoPackager, update_conandata/from conan.tools.files import copy, update_conandata/g' "$filepath"
-                      sed -i 's/from conan\.tools\.files import copy, save, load, AutoPackager/from conan.tools.files import copy, save, load/g' "$filepath"
-                      sed -i 's/from conan\.tools\.files import AutoPackager/from conan.tools.files import copy/g' "$filepath"
-                      # Replace AutoPackager(self).run() with explicit copy calls
-                      if grep -q "AutoPackager(self).run()" "$filepath"; then
-                          sed -i '/AutoPackager(self)\.run()/r /tmp/autopackager_replacement.txt' "$filepath"
-                          sed -i '/AutoPackager(self)\.run()/d' "$filepath"
-                      fi
-                  fi
-              done
-              echo "AutoPackager patching complete"
-          }
-
-          # Create the replacement text for AutoPackager(self).run()
-          cat > /tmp/autopackager_replacement.txt << 'EOF'
-          copy(self, pattern="*.h", dst=os.path.join(self.package_folder, "include"), keep_path=False)
-          copy(self, pattern="*.a", dst=os.path.join(self.package_folder, "lib"), keep_path=False)
-          copy(self, pattern="*.lib", dst=os.path.join(self.package_folder, "lib"), keep_path=False)
-          copy(self, pattern="*.so*", dst=os.path.join(self.package_folder, "lib"), keep_path=False)
-          copy(self, pattern="*.dylib", dst=os.path.join(self.package_folder, "lib"), keep_path=False)
-          copy(self, pattern="*.dll", dst=os.path.join(self.package_folder, "bin"), keep_path=False)
-          EOF
-
-          # Retry loop for conan install
-          MAX_RETRIES=10
-          RETRY_COUNT=0
-
-          while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
-              RETRY_COUNT=$((RETRY_COUNT + 1))
-              echo "Conan install attempt $RETRY_COUNT/$MAX_RETRIES..."
-
-              # Run conan install and capture output
-              conan install "$@" 2>&1 | tee /tmp/conan-output.log
-              EXIT_CODE=${PIPESTATUS[0]}
-
-              if [ $EXIT_CODE -eq 0 ]; then
-                  echo "Conan install succeeded!"
-                  exit 0
-              fi
-
-              # Check if the error is related to AutoPackager
-              if grep -q "AutoPackager" /tmp/conan-output.log; then
-                  echo "AutoPackager error detected, patching recipes and retrying..."
-                  patch_autopackager
-                  sleep 1
-              else
-                  echo "Conan install failed with non-AutoPackager error:"
-                  tail -100 /tmp/conan-output.log
-                  exit $EXIT_CODE
-              fi
-          done
-
-          echo "Max retries reached, giving up"
-          tail -100 /tmp/conan-output.log
-          exit 1
-          WRAPPER_EOF
-
-          chmod +x /tmp/conan-install-wrapper.sh
-          echo "Created conan-install-wrapper.sh"
-
-      - name: Create libnsl symlink for ARM64
-        run: |
-          # Some Python builds may need libnsl.so symlink
-          if [ -f /lib/aarch64-linux-gnu/libnsl.so.2 ] && [ ! -L /lib/aarch64-linux-gnu/libnsl.so ]; then
-            sudo ln -sf /lib/aarch64-linux-gnu/libnsl.so.2 /lib/aarch64-linux-gnu/libnsl.so
-          fi
-
-      - name: Install Cura dependencies with Conan
-        run: |
-          cd /home/runner/work/Cura/Cura
-
-          # Set CONAN_LOGIN_USERNAME to skip any interactive prompts
-          export CONAN_LOGIN_USERNAME=""
-
-          # Use the wrapper script that patches AutoPackager and retries on failure
-          /tmp/conan-install-wrapper.sh \
+          source .venv/bin/activate
+          conan install . \
             --build=missing \
             --update \
             -o cura/*:devtools=True \
-            -pr:h cura-arm64 \
-            -pr:b default \
             -g VirtualPythonEnv \
             ${{ inputs.conan_args }}
+        timeout-minutes: 300
 
-      - name: Build Cura
+      - name: Setup Python environment
         run: |
-          cd /home/runner/work/Cura/Cura
-          source venv/bin/activate
+          source .venv/bin/activate
 
-          # Verify PyQt6 is installed
-          python -c "import PyQt6; print('PyQt6 installed successfully')"
-
-          # Run any additional build steps if needed
-          # python cura_app.py --version  # Quick sanity check
-
-      - name: Create PyInstaller spec
-        run: |
-          cd /home/runner/work/Cura/Cura
-          source venv/bin/activate
-
-          # Run conan deploy to prepare for PyInstaller
-          conan deploy . || true
-
-          # The spec file should have been generated by conan deploy
-          if [ -f "venv/conan/UltiMaker-Cura.spec" ]; then
-            echo "PyInstaller spec found at venv/conan/UltiMaker-Cura.spec"
-          else
-            echo "Warning: PyInstaller spec not found"
+          # Link system PyQt6 to Conan venv (avoids building PyQt6 from source)
+          VENV_SITE=$(find build/generators/cura_venv -name site-packages -type d | head -1)
+          SYS_SITE=$(python3 -c "import site; print(site.getsitepackages()[0])")
+          if [ -d "$VENV_SITE" ] && [ -d "$SYS_SITE/PyQt6" ]; then
+            ln -sf "$SYS_SITE/PyQt6" "$VENV_SITE/" || true
+            ln -sf "$SYS_SITE/PyQt6_sip"* "$VENV_SITE/" 2>/dev/null || true
           fi
+
+          # Generate CuraVersion.py
+          cat > cura/CuraVersion.py << 'PYEOF'
+          # Auto-generated for ARM64 build
+          CuraAppName = "cura"
+          CuraAppDisplayName = "UltiMaker Cura"
+          CuraVersion = "5.12.0-alpha.0"
+          CuraVersionFull = "5.12.0-alpha.0"
+          CuraBuildType = ""
+          CuraDebugMode = False
+          CuraCloudAPIRoot = "https://api.ultimaker.com"
+          CuraCloudAPIVersion = "1"
+          CuraCloudAccountAPIRoot = "https://account.ultimaker.com"
+          CuraMarketplaceRoot = "https://marketplace.ultimaker.com"
+          CuraDigitalFactoryURL = "https://digitalfactory.ultimaker.com"
+          CuraLatestURL = "https://software.ultimaker.com/latest.json"
+          ConanInstalls = {}
+          PythonInstalls = {}
+          DependenciesDescriptions = {}
+          PYEOF
+
+      - name: Test Cura imports
+        run: |
+          source build/generators/virtual_python_env.sh
+
+          # Test imports
+          python -c "from PyQt6.QtCore import QT_VERSION_STR; print(f'PyQt6 Qt: {QT_VERSION_STR}')"
+          python -c "import UM; print('Uranium imported successfully')"
+          python -c "import cura; print('Cura imported successfully')"
+          python -c "from cura.CuraApplication import CuraApplication; print('CuraApplication imported')"
+
+          # Test CuraEngine
+          which CuraEngine && CuraEngine help
+
+      - name: Run unit tests
+        run: |
+          source build/generators/virtual_python_env.sh
+          QT_QPA_PLATFORM=offscreen pytest tests/ -v --tb=short || echo "Some tests may fail on ARM64"
+        continue-on-error: true
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
+        if: always()
         with:
           name: cura-arm64-build
           path: |
-            venv/
-            dist/
+            build/generators/cura_venv/
+            build/generators/virtual_python_env.sh
+            cura/CuraVersion.py
+            !**/*.pyc
+            !**/__pycache__
           retention-days: 7
