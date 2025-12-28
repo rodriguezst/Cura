@@ -88,16 +88,27 @@ jobs:
           conan profile detect --force
           conan config install https://github.com/ultimaker/conan-config.git
 
-          # Add ARM64-specific version overrides to resolve conflicts
-          cat >> ~/.conan2/profiles/cura.jinja << 'EOF'
+          # Add ARM64-specific version overrides to existing [replace_requires] section
+          # (don't create duplicate section - append to existing one)
+          PROFILE=~/.conan2/profiles/cura.jinja
+          if grep -q '^\[replace_requires\]' "$PROFILE"; then
+            # Append entries after existing [replace_requires] section
+            sed -i '/^\[replace_requires\]/a \
+          # ARM64 Linux version overrides\
+          spdlog/*: spdlog/1.12.0\
+          fmt/*: fmt/10.2.1\
+          boost/*: boost/1.86.0' "$PROFILE"
+          else
+            # No existing section, create new one
+            cat >> "$PROFILE" << 'EOF'
 
-          # ARM64 Linux version overrides
           [replace_requires]
+          # ARM64 Linux version overrides
           spdlog/*: spdlog/1.12.0
           fmt/*: fmt/10.2.1
-          # CuraEngine requires Boost 1.86.0 for concurrent_flat_set.hpp (added in Boost 1.84+)
           boost/*: boost/1.86.0
           EOF
+          fi
 
       - name: Cache Conan packages
         uses: actions/cache@v4
