@@ -152,6 +152,38 @@ jobs:
               pip install certifi zeroconf trimesh sentry-sdk pyserial requests shapely \
                           keyring cryptography scipy pyclipper PyYAML packaging || true
             }
+
+          # Generate virtual_python_env.sh if it doesn't exist (fallback)
+          if [ ! -f build/generators/virtual_python_env.sh ]; then
+            echo "Generating virtual_python_env.sh manually..."
+
+            # Find Conan package paths
+            CONAN_PKGS="$HOME/.conan2/p"
+            URANIUM_PATH=$(find "$CONAN_PKGS" -path "*/uranium*/p/site-packages" -type d 2>/dev/null | head -1)
+            URANIUM_PLUGINS=$(find "$CONAN_PKGS" -path "*/uranium*/p/plugins" -type d 2>/dev/null | head -1)
+            PYARCUS_PATH=$(find "$CONAN_PKGS" -path "*/pyarc*/p/lib" -type d 2>/dev/null | head -1)
+            PYSAVITAR_PATH=$(find "$CONAN_PKGS" -path "*/pysav*/p/lib" -type d 2>/dev/null | head -1)
+            PYNEST2D_PATH=$(find "$CONAN_PKGS" -path "*/pynes*/p/lib" -type d 2>/dev/null | head -1)
+            DULCIFICUM_PATH=$(find "$CONAN_PKGS" -path "*/dulci*/p/lib/pyDulcificum" -type d 2>/dev/null | head -1)
+            CURAENGINE_PATH=$(find "$CONAN_PKGS" -path "*/curaen*/p/bin" -type d 2>/dev/null | head -1)
+            CURA_RESOURCES=$(find "$CONAN_PKGS" -path "*/cura_resources*/p/res" -type d 2>/dev/null | head -1)
+
+            VENV_SITE="$(pwd)/build/generators/cura_venv/lib/python3.12/site-packages"
+
+            cat > build/generators/virtual_python_env.sh << ENVEOF
+            #!/bin/bash
+            # Auto-generated virtual_python_env.sh for ARM64 build
+            
+            export PYTHONPATH="${VENV_SITE}:${URANIUM_PATH}:${URANIUM_PLUGINS}:${PYARCUS_PATH}:${PYSAVITAR_PATH}:${PYNEST2D_PATH}:${DULCIFICUM_PATH}:\${PYTHONPATH}"
+            export PATH="${CURAENGINE_PATH}:\${PATH}"
+            export CURA_RESOURCES="${CURA_RESOURCES}"
+            export CURA_ENGINE_SEARCH_PATH="${CURA_RESOURCES}/extruders"
+            export VIRTUAL_ENV="$(pwd)/build/generators/cura_venv"
+            export QT_QPA_PLATFORM="\${QT_QPA_PLATFORM:-offscreen}"
+            unset PYTHONHOME
+            ENVEOF
+            chmod +x build/generators/virtual_python_env.sh
+          fi
         timeout-minutes: 300
 
       - name: Setup Python environment
@@ -220,4 +252,4 @@ jobs:
             !**/*.pyc
             !**/__pycache__
           retention-days: 7
-          
+
