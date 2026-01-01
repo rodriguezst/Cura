@@ -171,17 +171,17 @@ jobs:
             VENV_SITE="$(pwd)/build/generators/cura_venv/lib/python3.12/site-packages"
 
             cat > build/generators/virtual_python_env.sh << ENVEOF
-            #!/bin/bash
-            # Auto-generated virtual_python_env.sh for ARM64 build
-            
-            export PYTHONPATH="${VENV_SITE}:${URANIUM_PATH}:${URANIUM_PLUGINS}:${PYARCUS_PATH}:${PYSAVITAR_PATH}:${PYNEST2D_PATH}:${DULCIFICUM_PATH}:\${PYTHONPATH}"
-            export PATH="${CURAENGINE_PATH}:\${PATH}"
-            export CURA_RESOURCES="${CURA_RESOURCES}"
-            export CURA_ENGINE_SEARCH_PATH="${CURA_RESOURCES}/extruders"
-            export VIRTUAL_ENV="$(pwd)/build/generators/cura_venv"
-            export QT_QPA_PLATFORM="\${QT_QPA_PLATFORM:-offscreen}"
-            unset PYTHONHOME
-            ENVEOF
+          #!/bin/bash
+          # Auto-generated virtual_python_env.sh for ARM64 build
+          
+          export PYTHONPATH="${VENV_SITE}:${URANIUM_PATH}:${URANIUM_PLUGINS}:${PYARCUS_PATH}:${PYSAVITAR_PATH}:${PYNEST2D_PATH}:${DULCIFICUM_PATH}:\${PYTHONPATH}"
+          export PATH="${CURAENGINE_PATH}:\${PATH}"
+          export CURA_RESOURCES="${CURA_RESOURCES}"
+          export CURA_ENGINE_SEARCH_PATH="${CURA_RESOURCES}/extruders"
+          export VIRTUAL_ENV="$(pwd)/build/generators/cura_venv"
+          export QT_QPA_PLATFORM="\${QT_QPA_PLATFORM:-offscreen}"
+          unset PYTHONHOME
+          ENVEOF
             chmod +x build/generators/virtual_python_env.sh
           fi
         timeout-minutes: 300
