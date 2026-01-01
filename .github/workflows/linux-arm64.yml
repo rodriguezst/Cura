@@ -171,23 +171,23 @@ jobs:
 
           # Generate CuraVersion.py
           cat > cura/CuraVersion.py << 'PYEOF'
-# Auto-generated for ARM64 build
-CuraAppName = "cura"
-CuraAppDisplayName = "UltiMaker Cura"
-CuraVersion = "5.12.0-alpha.0"
-CuraVersionFull = "5.12.0-alpha.0"
-CuraBuildType = ""
-CuraDebugMode = False
-CuraCloudAPIRoot = "https://api.ultimaker.com"
-CuraCloudAPIVersion = "1"
-CuraCloudAccountAPIRoot = "https://account.ultimaker.com"
-CuraMarketplaceRoot = "https://marketplace.ultimaker.com"
-CuraDigitalFactoryURL = "https://digitalfactory.ultimaker.com"
-CuraLatestURL = "https://software.ultimaker.com/latest.json"
-ConanInstalls = {}
-PythonInstalls = {}
-DependenciesDescriptions = {}
-PYEOF
+          # Auto-generated for ARM64 build
+          CuraAppName = "cura"
+          CuraAppDisplayName = "UltiMaker Cura"
+          CuraVersion = "5.12.0-alpha.0"
+          CuraVersionFull = "5.12.0-alpha.0"
+          CuraBuildType = ""
+          CuraDebugMode = False
+          CuraCloudAPIRoot = "https://api.ultimaker.com"
+          CuraCloudAPIVersion = "1"
+          CuraCloudAccountAPIRoot = "https://account.ultimaker.com"
+          CuraMarketplaceRoot = "https://marketplace.ultimaker.com"
+          CuraDigitalFactoryURL = "https://digitalfactory.ultimaker.com"
+          CuraLatestURL = "https://software.ultimaker.com/latest.json"
+          ConanInstalls = {}
+          PythonInstalls = {}
+          DependenciesDescriptions = {}
+          PYEOF
 
       - name: Test Cura imports
         run: |
