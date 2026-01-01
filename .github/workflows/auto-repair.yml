@@ -1,0 +1,143 @@
+# .github/workflows/cc-fix-workflow.yml
+name: Auto-fix failed workflows using Claude Code
+
+on:
+  workflow_run:
+    workflows: ["Linux ARM64 Build"]
+    types: [completed]
+
+jobs:
+  repair:
+    if: ${{ github.event.workflow_run.conclusion == 'failure' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_branch }}
+          token: ${{ github.token }}
+
+      - name: Check if auto-fix commit
+        id: check
+        run: |
+          if git log -1 --pretty=%B | grep -q "\\[skip-autofix\\]"; then
+            echo "skip=true" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Download and organize failed run logs
+        if: steps.check.outputs.skip != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p /tmp/ci-failure/{failed-steps,all-steps}
+
+          # Save run metadata
+          cat <<EOF > /tmp/ci-failure/context.txt
+          Repository: ${{ github.repository }}
+          Branch: ${{ github.event.workflow_run.head_branch }}
+          Workflow: ${{ github.event.workflow_run.name }}
+          Run ID: ${{ github.event.workflow_run.id }}
+          Run URL: ${{ github.event.workflow_run.html_url }}
+          EOF
+
+          # Get all jobs from this run
+          gh api repos/${{ github.repository }}/actions/runs/${{ github.event.workflow_run.id }}/jobs > /tmp/ci-failure/jobs.json
+
+          # Extract failed steps info and save summary
+          jq -r '
+            .jobs[] | 
+            select(.conclusion == "failure") |
+            "Job: \\(.name) (ID: \\(.id))\\nStatus: \\(.conclusion)\\nFailed steps:\\n" + 
+            ([.steps[] | select(.conclusion == "failure") | "  - \\(.name) (number: \\(.number))"] | join("\\n"))
+          ' /tmp/ci-failure/jobs.json > /tmp/ci-failure/failure-summary.txt
+
+          # Download full logs for the run
+          gh run view ${{ github.event.workflow_run.id }} --log > /tmp/ci-failure/full_log.txt
+
+          # Extract and save individual step logs
+          # Parse the log file which has format: {job-name}\\t{step-name}\\t{log-line}
+          while IFS=$'\\t' read -r job step line; do
+            # Sanitize names for filenames
+            safe_job=$(echo "$job" | tr -cs 'a-zA-Z0-9-' '_')
+            safe_step=$(echo "$step" | tr -cs 'a-zA-Z0-9-' '_')
+            echo "$line" >> "/tmp/ci-failure/all-steps/${safe_job}__${safe_step}.txt"
+          done < /tmp/ci-failure/full_log.txt
+
+          # Copy failed step logs to the failed-steps directory for easy access
+          jq -r '
+            .jobs[] | 
+            select(.conclusion == "failure") |
+            .name as $job |
+            .steps[] | 
+            select(.conclusion == "failure") |
+            "\\($job)\\t\\(.name)"
+          ' /tmp/ci-failure/jobs.json | while IFS=$'\\t' read -r job step; do
+            safe_job=$(echo "$job" | tr -cs 'a-zA-Z0-9-' '_')
+            safe_step=$(echo "$step" | tr -cs 'a-zA-Z0-9-' '_')
+            src="/tmp/ci-failure/all-steps/${safe_job}__${safe_step}.txt"
+            if [ -f "$src" ]; then
+              cp "$src" "/tmp/ci-failure/failed-steps/${safe_job}__${safe_step}.txt"
+            fi
+          done
+
+          # Create a manifest of what's available
+          cat <<EOF > /tmp/ci-failure/README.txt
+          CI Failure Logs Directory Structure
+          ====================================
+
+          context.txt        - Run metadata (repo, branch, workflow)
+          failure-summary.txt - Summary of which jobs/steps failed
+          jobs.json          - Full API response with job details
+
+          failed-steps/      - Contains ONLY the logs from failed steps (check these first!)
+          all-steps/         - Contains logs from all steps (for additional context if needed)
+          full_log.txt       - Complete raw log output
+
+          File naming: {job-name}__{step-name}.txt
+          EOF
+
+          echo "=== Failure Summary ==="
+          cat /tmp/ci-failure/failure-summary.txt
+          echo ""
+          echo "=== Failed step logs available ==="
+          ls -la /tmp/ci-failure/failed-steps/
+
+      - name: Fix with Claude Code
+        if: steps.check.outputs.skip != 'true'
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          ANTHROPIC_BASE_URL: ${{ secrets.ANTHROPIC_BASE_URL }}
+          ANTHROPIC_MODEL: ${{ secrets.ANTHROPIC_MODEL }}
+          ANTHROPIC_DEFAULT_OPUS_MODEL: ${{ secrets.ANTHROPIC_MODEL }}
+          ANTHROPIC_DEFAULT_SONNET_MODEL: ${{ secrets.ANTHROPIC_MODEL }}
+          ANTHROPIC_DEFAULT_HAIKU_MODEL: ${{ secrets.ANTHROPIC_MODEL_SMALL }}
+          DISABLE_PROMPT_CACHING: 1
+          CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: 1
+        run: |
+          npm install -g @anthropic-ai/claude-code
+
+          claude -p "A GitHub Actions workflow has failed. Logs are organized in /tmp/ci-failure/
+
+          Follow these steps in order:
+
+          1. Read /tmp/ci-failure/README.txt to understand the directory structure
+          2. Read /tmp/ci-failure/failure-summary.txt to see which steps failed
+          3. Read the log files in /tmp/ci-failure/failed-steps/ - these contain ONLY the failed step output
+          4. Based on the errors, identify the root cause in the codebase
+          5. Only if needed, check /tmp/ci-failure/all-steps/ for additional context from prior steps
+          6. Make the minimal fix required to resolve the failure
+          7. Do not modify workflow files unless the issue is clearly in the workflow itself
+
+          Important: Focus on the failed-steps/ directory first. Do not read full_log.txt unless absolutely necessary."
+
+      - name: Commit and push fixes
+        if: steps.check.outputs.skip != 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add -A
+          if git diff --staged --quiet; then
+            echo "No changes to commit"
+          else
+            git commit -m "fix: auto-repair CI failure [skip-autofix]"
+            git push
+          fi
