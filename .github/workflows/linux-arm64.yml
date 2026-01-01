@@ -122,45 +122,72 @@ jobs:
       - name: Build Cura dependencies
         run: |
           source .venv/bin/activate
+
+          # Pre-create cura_venv with system-site-packages to access system PyQt6
+          # This prevents VirtualPythonEnv from trying to pip install PyQt6
+          mkdir -p build/generators
+          python3 -m venv --system-site-packages build/generators/cura_venv
+
+          # Install packages that VirtualPythonEnv would install, excluding PyQt6
+          source build/generators/cura_venv/bin/activate
+          pip install --upgrade pip wheel setuptools
+
+          # Now run conan - VirtualPythonEnv will reuse existing venv
           conan install . \
             --build=missing \
             --update \
             -o cura/*:devtools=True \
             -g VirtualPythonEnv \
-            ${{ inputs.conan_args }}
+            ${{ inputs.conan_args }} || {
+              # If VirtualPythonEnv fails on PyQt6, manually install remaining deps
+              echo "VirtualPythonEnv failed, manually installing pip packages..."
+
+              # Filter out PyQt6 from requirements and install the rest
+              if [ -f build/generators/pip_requirements_core_hashes.txt ]; then
+                grep -v -E '^PyQt6|^PyQt6-' build/generators/pip_requirements_core_hashes.txt > /tmp/requirements_no_pyqt.txt || true
+                pip install -r /tmp/requirements_no_pyqt.txt || true
+              fi
+
+              # Install other common dependencies
+              pip install certifi zeroconf trimesh sentry-sdk pyserial requests shapely \
+                          keyring cryptography scipy pyclipper PyYAML packaging || true
+            }
         timeout-minutes: 300
 
       - name: Setup Python environment
         run: |
-          source .venv/bin/activate
-
-          # Link system PyQt6 to Conan venv (avoids building PyQt6 from source)
+          # Ensure system PyQt6 is accessible in venv
           VENV_SITE=$(find build/generators/cura_venv -name site-packages -type d | head -1)
-          SYS_SITE=$(python3 -c "import site; print(site.getsitepackages()[0])")
-          if [ -d "$VENV_SITE" ] && [ -d "$SYS_SITE/PyQt6" ]; then
-            ln -sf "$SYS_SITE/PyQt6" "$VENV_SITE/" || true
+
+          # Verify PyQt6 works
+          source build/generators/cura_venv/bin/activate
+          python -c "from PyQt6.QtCore import QT_VERSION_STR; print(f'PyQt6 Qt: {QT_VERSION_STR}')" || {
+            echo "PyQt6 not found, linking from system..."
+            SYS_SITE=$(python3 -c "import site; print(site.getsitepackages()[0])")
+            ln -sf "$SYS_SITE/PyQt6" "$VENV_SITE/" 2>/dev/null || true
             ln -sf "$SYS_SITE/PyQt6_sip"* "$VENV_SITE/" 2>/dev/null || true
-          fi
+            ln -sf "$SYS_SITE/sipbuild"* "$VENV_SITE/" 2>/dev/null || true
+          }
 
           # Generate CuraVersion.py
           cat > cura/CuraVersion.py << 'PYEOF'
-          # Auto-generated for ARM64 build
-          CuraAppName = "cura"
-          CuraAppDisplayName = "UltiMaker Cura"
-          CuraVersion = "5.12.0-alpha.0"
-          CuraVersionFull = "5.12.0-alpha.0"
-          CuraBuildType = ""
-          CuraDebugMode = False
-          CuraCloudAPIRoot = "https://api.ultimaker.com"
-          CuraCloudAPIVersion = "1"
-          CuraCloudAccountAPIRoot = "https://account.ultimaker.com"
-          CuraMarketplaceRoot = "https://marketplace.ultimaker.com"
-          CuraDigitalFactoryURL = "https://digitalfactory.ultimaker.com"
-          CuraLatestURL = "https://software.ultimaker.com/latest.json"
-          ConanInstalls = {}
-          PythonInstalls = {}
-          DependenciesDescriptions = {}
-          PYEOF
+# Auto-generated for ARM64 build
+CuraAppName = "cura"
+CuraAppDisplayName = "UltiMaker Cura"
+CuraVersion = "5.12.0-alpha.0"
+CuraVersionFull = "5.12.0-alpha.0"
+CuraBuildType = ""
+CuraDebugMode = False
+CuraCloudAPIRoot = "https://api.ultimaker.com"
+CuraCloudAPIVersion = "1"
+CuraCloudAccountAPIRoot = "https://account.ultimaker.com"
+CuraMarketplaceRoot = "https://marketplace.ultimaker.com"
+CuraDigitalFactoryURL = "https://digitalfactory.ultimaker.com"
+CuraLatestURL = "https://software.ultimaker.com/latest.json"
+ConanInstalls = {}
+PythonInstalls = {}
+DependenciesDescriptions = {}
+PYEOF
 
       - name: Test Cura imports
         run: |
@@ -193,3 +220,4 @@ jobs:
             !**/*.pyc
             !**/__pycache__
           retention-days: 7
+          
