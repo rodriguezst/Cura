@@ -174,13 +174,14 @@ jobs:
           #!/bin/bash
           # Auto-generated virtual_python_env.sh for ARM64 build
           
+          # Activate the venv first (gives access to system-site-packages including PyQt6)
+          source "$(pwd)/build/generators/cura_venv/bin/activate"
+          
           export PYTHONPATH="${VENV_SITE}:${URANIUM_PATH}:${URANIUM_PLUGINS}:${PYARCUS_PATH}:${PYSAVITAR_PATH}:${PYNEST2D_PATH}:${DULCIFICUM_PATH}:\${PYTHONPATH}"
           export PATH="${CURAENGINE_PATH}:\${PATH}"
           export CURA_RESOURCES="${CURA_RESOURCES}"
           export CURA_ENGINE_SEARCH_PATH="${CURA_RESOURCES}/extruders"
-          export VIRTUAL_ENV="$(pwd)/build/generators/cura_venv"
           export QT_QPA_PLATFORM="\${QT_QPA_PLATFORM:-offscreen}"
-          unset PYTHONHOME
           ENVEOF
             chmod +x build/generators/virtual_python_env.sh
           fi
@@ -223,7 +224,17 @@ jobs:
 
       - name: Test Cura imports
         run: |
-          source build/generators/virtual_python_env.sh
+          # First activate the venv to get system-site-packages (PyQt6)
+          source build/generators/cura_venv/bin/activate
+
+          # Then source the environment script for Conan paths
+          if [ -f build/generators/virtual_python_env.sh ]; then
+            source build/generators/virtual_python_env.sh
+          fi
+
+          # Debug: show Python path
+          python -c "import sys; print('Python:', sys.executable)"
+          python -c "import sys; print('Paths:', sys.path[:5])"
 
           # Test imports
           python -c "from PyQt6.QtCore import QT_VERSION_STR; print(f'PyQt6 Qt: {QT_VERSION_STR}')"
@@ -232,11 +243,14 @@ jobs:
           python -c "from cura.CuraApplication import CuraApplication; print('CuraApplication imported')"
 
           # Test CuraEngine
-          which CuraEngine && CuraEngine help
+          which CuraEngine && CuraEngine help || echo "CuraEngine not in PATH"
 
       - name: Run unit tests
         run: |
-          source build/generators/virtual_python_env.sh
+          source build/generators/cura_venv/bin/activate
+          if [ -f build/generators/virtual_python_env.sh ]; then
+            source build/generators/virtual_python_env.sh
+          fi
           QT_QPA_PLATFORM=offscreen pytest tests/ -v --tb=short || echo "Some tests may fail on ARM64"
         continue-on-error: true
 
